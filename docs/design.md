@@ -119,7 +119,7 @@ class MarketDataProvider:
 
 #### 증분 수집과 로컬 캐시
 
-SQLite를 수집 데이터의 영속 캐시로 사용한다. API 호출 전에 종목·데이터 종류별 저장 현황을 조회하고, 필요한 데이터가 이미 있으면 공급자 API를 호출하지 않는다.
+SQLite를 수집 데이터의 영속 캐시로 사용한다. 애플리케이션 코드는 `app/storage/sqlite_store.py`에서 DB 접근을 담당하고, 실제 DB 파일 `./stock-briefing.db`는 Ubuntu의 Docker 프로젝트 루트(`compose.yaml`과 같은 디렉터리)에 유지한다. Compose bind mount로 파일을 컨테이너에 연결한다. API 호출 전에 종목·데이터 종류별 저장 현황을 조회하고, 필요한 데이터가 이미 있으면 공급자 API를 호출하지 않는다.
 
 - 최초 설정 때 관심 종목별로 52주 지표를 계산할 수 있는 과거 일봉과 필요한 수급 이력을 한 번 수집한다.
 - 이후 정기 실행에서는 DB의 마지막 완전 거래일 이후 데이터만 요청한다. 거래일이 아닌 날에는 마지막 거래일 데이터가 완전하면 과거 구간을 다시 받지 않는다.
@@ -309,7 +309,10 @@ stock-briefing/
 - 서버와 timer 기준 시간대를 Asia/Seoul로 맞추고, 앱 내부에서도 기준 시각을 명시적으로 기록한다.
 - systemd timer의 missed-run 동작을 설정해 서버가 예약 시각에 꺼져 있던 경우의 처리 방침을 명확히 한다. 늦은 시각에 실행되면 오래된 데이터로 제안하지 않도록 데이터 기준일 검사를 한다.
 - Compose의 `.env`는 Git에 커밋하지 않는다. 권한을 제한하고, 가능하면 Docker secrets 또는 root 전용 설정 파일을 사용한다.
-- SQLite 파일과 로그는 컨테이너 내부가 아닌 호스트의 영속 볼륨에 둔다.
+- SQLite 파일은 **사용자가 만든 Docker 프로젝트 폴더 최상단**, 즉 `compose.yaml`과 같은 디렉터리의 `./stock-briefing.db`에 둔다. 하위 `data/` 폴더나 컨테이너 파일시스템에는 두지 않는다.
+- Compose에서 `./stock-briefing.db`를 컨테이너의 `/app/data/stock-briefing.db`에 바인드 마운트하고 앱의 `SQLITE_PATH`도 이 컨테이너 경로로 지정한다. 파일이 없을 때 최초 실행에서 SQLite가 생성할 수 있도록 호스트 폴더 권한을 준비한다.
+- `stock-briefing.db`와 SQLite WAL sidecar(`stock-briefing.db-wal`, `stock-briefing.db-shm`) 및 백업은 Git에서 제외한다. 배포 폴더가 저장소 clone 폴더와 같아도 실수로 커밋되지 않게 `.gitignore`에 등록한다.
+- 컨테이너 내부 로그는 표준 출력으로 내보내고 Docker 로그 로테이션을 적용한다. DB 백업과 복원 절차는 Ubuntu 호스트에서 수행한다.
 - 로그 로테이션, SQLite 백업, 백업 복원 절차를 설정한다.
 - 네트워크/API 실패 시 제한 횟수로 재시도하고, 최종 실패는 로그로 남긴다. 재실행으로 같은 날짜의 제안·메시지가 중복 저장 또는 중복 전송되지 않도록 날짜별 실행 키를 둔다.
 
