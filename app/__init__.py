@@ -1,0 +1,1 @@
+"""Stock briefing messaging application."""

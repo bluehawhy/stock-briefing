@@ -1,0 +1,10 @@
+[Unit]
+Description=Stock briefing at 08:30 Asia/Seoul
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Asia/Seoul
+Persistent=true
+Unit=stock-briefing.service
+
+[Install]
+WantedBy=timers.target

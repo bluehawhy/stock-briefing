@@ -1,0 +1,5 @@
+briefing.example.com {
+    # Replace the hostname and configure DNS/TLS before using the Kakao skill URL.
+    # Keep access logging for this secret-bearing route disabled or redact the URL.
+    reverse_proxy 127.0.0.1:8000
+}

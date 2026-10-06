@@ -1,0 +1,9 @@
+[Unit]
+Description=Send the saved morning stock briefing to Telegram
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-briefing
+ExecStart=/usr/bin/docker compose --profile job run --rm worker
