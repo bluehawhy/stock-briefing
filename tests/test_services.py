@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.services import BotService, InboundMessage
@@ -7,18 +8,33 @@ from app.storage import Store
 
 def test_channel_access_and_shared_briefing(tmp_path):
     store = Store(tmp_path / "stock-briefing.db")
-    settings = Settings(tmp_path / "stock-briefing.db", "secret", frozenset({"k1"}), "token", frozenset({"42"}))
+    settings = Settings(
+        tmp_path / "stock-briefing.db",
+        "secret",
+        frozenset({"k1"}),
+        "token",
+        frozenset({"42"}),
+    )
     service = BotService(settings, store)
-    store.save_briefing(date(2026, 10, 7), "기준 거래일: 2026-10-06\n모의 브리핑")
+    store.save_briefing(
+        datetime.now(ZoneInfo("Asia/Seoul")).date(),
+        "기준 거래일: 2026-10-06\n모의 브리핑",
+    )
 
     kakao = service.handle(InboundMessage("kakao", "k1", "오늘 브리핑"))
     telegram = service.handle(InboundMessage("telegram", "42", "오늘 브리핑", "42"))
     assert kakao == telegram
     assert "2026-10-06" in kakao
     assert store.telegram_chat("42") == "42"
-    assert service.handle(InboundMessage("telegram", "other", "오늘 브리핑", "999")) is None
+    assert (
+        service.handle(InboundMessage("telegram", "other", "오늘 브리핑", "999"))
+        is None
+    )
     assert store.telegram_chat("other") is None
-    assert service.handle(InboundMessage("telegram", "42", "오늘 브리핑", "-10", False)) is None
+    assert (
+        service.handle(InboundMessage("telegram", "42", "오늘 브리핑", "-10", False))
+        is None
+    )
 
 
 def test_delivery_reservation_is_once_per_day(tmp_path):

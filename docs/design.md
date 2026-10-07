@@ -1,6 +1,6 @@
 # 국내주식 매매 제안 브리핑 서비스 설계서
 
-- 문서 상태: 초안
+- 문서 상태: 초기 설계 초안. 2026-10-07 실제 구현·지원 제한은 [implementation.md](implementation.md) 참조
 - 대상 저장소: `bluehawhy/stock-briefing`
 - 구현 언어: Python
 - 운영 환경: 집의 Ubuntu 서버 + Docker

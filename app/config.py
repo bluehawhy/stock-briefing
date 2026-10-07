@@ -16,6 +16,11 @@ class Settings:
     kakao_allowed_user_ids: frozenset[str]
     telegram_bot_token: str
     telegram_allowed_user_ids: frozenset[str]
+    public_base_url: str = ""
+    master_key_file: str = ""
+    kis_app_key: str = ""
+    kis_app_secret: str = ""
+    kis_environment: str = "live"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -25,4 +30,9 @@ class Settings:
             kakao_allowed_user_ids=_ids(os.getenv("KAKAO_ALLOWED_USER_IDS", "")),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_allowed_user_ids=_ids(os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")),
+            public_base_url=os.getenv("PUBLIC_BASE_URL", "").rstrip("/"),
+            master_key_file=os.getenv("MASTER_KEY_FILE", ""),
+            kis_app_key=os.getenv("KIS_APP_KEY", ""),
+            kis_app_secret=os.getenv("KIS_APP_SECRET", ""),
+            kis_environment=os.getenv("KIS_ENVIRONMENT", "live"),
         )

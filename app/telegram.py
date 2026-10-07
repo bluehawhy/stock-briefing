@@ -34,7 +34,9 @@ class TelegramAPI:
         result = response.json()
         if not result.get("ok"):
             # Do not print the request URL: it contains the bot token.
-            raise RuntimeError(f"Telegram {method} failed: {result.get('error_code', 'unknown')}")
+            raise RuntimeError(
+                f"Telegram {method} failed: {result.get('error_code', 'unknown')}"
+            )
         return result["result"]
 
     async def send_text(self, chat_id: str, text: str) -> None:
@@ -74,6 +76,7 @@ async def poll(settings: Settings, store: Store) -> None:
                                 chat_id=chat_id,
                                 text=message["text"],
                                 is_private=chat.get("type") == "private",
+                                message_id=str(update_id),
                             )
                         )
                         if reply and chat_id:
@@ -89,8 +92,12 @@ async def poll(settings: Settings, store: Store) -> None:
 async def send_briefing(settings: Settings, store: Store) -> str:
     """Send today's saved briefing once; an ambiguous send requires manual review."""
     if len(settings.telegram_allowed_user_ids) != 1:
-        raise ValueError("Configure exactly one TELEGRAM_ALLOWED_USER_IDS for scheduled delivery")
+        raise ValueError(
+            "Configure exactly one TELEGRAM_ALLOWED_USER_IDS for scheduled delivery"
+        )
     day: date = datetime.now(KST).date()
+    if not store.get("settings", "notifications", {"enabled": True})["enabled"]:
+        return "skipped: scheduled notifications disabled"
     record = store.briefing(day)
     if not record:
         return "skipped: no briefing saved for today"
@@ -107,7 +114,9 @@ async def send_briefing(settings: Settings, store: Store) -> str:
             )
     except Exception:
         # Do not retry blindly after an uncertain API outcome: that can duplicate a briefing.
-        store.finish_delivery(day, "review_required", "Telegram send failed or outcome unknown")
+        store.finish_delivery(
+            day, "review_required", "Telegram send failed or outcome unknown"
+        )
         raise RuntimeError("Telegram send failed; delivery requires review") from None
     store.finish_delivery(day, "sent")
     return "sent"

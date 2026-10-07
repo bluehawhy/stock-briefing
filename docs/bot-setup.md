@@ -2,7 +2,7 @@
 
 이 문서는 `stock-briefing`의 현재 메시지 코드를 실제 봇 계정에 연결하는 순서입니다. 텔레그램은 명령 응답과 매일 08:30(한국 시간) 발송을 담당합니다. 카카오톡 채널 챗봇은 사용자가 보낸 메시지에만 응답합니다. 양쪽 메시지는 같은 `BotService`로 전달됩니다.
 
-현재 명령은 `도움말`, `오늘 브리핑`, `서비스 상태`, `연동 상태`입니다. 매매 제안, 관심 종목, 계좌 및 증권사 연동, 자동 브리핑 생성은 아직 구현되지 않았습니다. 아침 발송은 **당일 브리핑이 DB에 저장되어 있을 때만** 이루어집니다.
+현재 명령은 `도움말`에서 확인합니다. 관심종목·보유량·계좌 추적·전략·알림·모의 기록 관리와 자동 브리핑 생성이 구현되어 있습니다. 데이터 공급자·전략·예산을 설정해야 분석이 가능하며, 설정이 없으면 데이터 확인 필요를 전달합니다. 첫 분석 설정과 서버 업데이트는 [README](../README.md), 지원 범위는 [구현 안내](implementation.md)를 참고하세요.
 
 ## 1. Ubuntu 서버 준비
 
@@ -56,11 +56,11 @@ python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
 
 ## 4. 08:30 브리핑 발송 점검
 
-전략 계산기를 만들기 전에는 테스트 문구를 해당 **발송일(한국 시간)**로 DB에 저장해 전달 경로만 확인할 수 있습니다.
+데이터 수집과 분리해 전달 경로만 확인할 때는 테스트 문구를 해당 **발송일(한국 시간)**로 저장하고 `send-briefing`을 명시합니다. 기본 worker는 데이터를 수집하고 브리핑을 새로 생성합니다.
 
 ```bash
 docker compose --profile job run -T --rm worker python -m app.cli save-briefing --date YYYY-MM-DD --file - < briefing.txt
-docker compose --profile job run --rm worker
+docker compose --profile job run --rm worker python -m app.cli send-briefing
 ```
 
 worker의 당일 발송 기록이 생기므로 같은 날짜로 여러 번 시험하려고 반복 실행하지 마세요. 실제 예약은 `deploy/systemd/stock-briefing.service`의 `WorkingDirectory`를 설치 경로로 바꾸고 service/timer를 `/etc/systemd/system/`에 설치한 뒤 다음처럼 켭니다.

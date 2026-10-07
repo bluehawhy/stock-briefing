@@ -1,5 +1,10 @@
 briefing.example.com {
     # Replace the hostname and configure DNS/TLS before using the Kakao skill URL.
-    # Keep access logging for this secret-bearing route disabled or redact the URL.
+    # Keep access logging disabled: skill and one-time registration URLs carry secrets.
     reverse_proxy 127.0.0.1:8000
 }
+
+# If sharing the household-ledger host, add only these routes to its existing block:
+# @stock_briefing path /kakao/skill/* /broker/register/*
+# reverse_proxy @stock_briefing 127.0.0.1:8000
+# Keep the existing household-ledger routes and disable/redact logs for these paths.

@@ -1,9 +1,17 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   api:
     build: .
     env_file: .env
     volumes:
       - ./:/data
+      - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}:/run/stock-briefing-secrets:ro
+    logging: *logging
     ports:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
@@ -13,11 +21,15 @@ services:
     command: ["python", "-m", "app.cli", "poll"]
     volumes:
       - ./:/data
+      - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}:/run/stock-briefing-secrets:ro
+    logging: *logging
     restart: unless-stopped
   worker:
     build: .
     env_file: .env
-    command: ["python", "-m", "app.cli", "send-briefing"]
+    command: ["python", "-m", "app.cli", "run-daily"]
     volumes:
       - ./:/data
+      - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}:/run/stock-briefing-secrets:ro
+    logging: *logging
     profiles: ["job"]

@@ -1,5 +1,5 @@
 [Unit]
-Description=Send the saved morning stock briefing to Telegram
+Description=Collect, generate and send the morning stock briefing to Telegram
 Requires=docker.service
 After=docker.service
 
