@@ -17,7 +17,7 @@ def test_watchlist_manual_holdings_and_validation(settings, store):
     service = BotService(settings, store)
     assert "추가" in service.handle(msg("관심종목 추가 005930 삼성전자"))
     assert "삼성전자" in service.handle(msg("관심종목 보기"))
-    assert "숫자 6자리" in service.handle(msg("관심종목 추가 abc"))
+    assert "종목코드만" in service.handle(msg("관심종목 추가 abc"))
     preview = service.handle(msg("보유량 설정 005930 0"))
     assert store.get("manual_holdings", "005930") is None
     assert "적용" in service.handle(msg("확인 " + code(preview)))

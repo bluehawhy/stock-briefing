@@ -194,6 +194,30 @@ def test_known_names_remove_and_readd(settings, store):
     assert "삼성전자 (005930)" in service.handle(message("삼성전자"))
 
 
+@pytest.mark.parametrize(
+    "text", ["관심종목 이노스페이스 추가", "관심종목 추가 이노스페이스"]
+)
+def test_stock_name_request_followup(settings, store, text):
+    service = BotService(settings, store)
+    assert "종목코드만" in service.handle(message(text))
+    assert not store.items("watchlist")
+    assert "이노스페이스 (462350)" in service.handle(message("462350"))
+    assert "제거: 462350" in service.handle(message("관심종목 이노스페이스 제거"))
+    assert "이노스페이스 (462350)" in service.handle(message(text))
+
+
+def test_name_first_request_overrides_input_and_multiple_commands(settings, store):
+    service = BotService(settings, store)
+    service.handle(message("보유량 설정"))
+    assert "추가:" in service.handle(message("관심종목 462350 이노스페이스 추가"))
+    assert store.get("command_input", "telegram:42:42") is None
+    reply = service.handle(message("관심종목 이노스페이스 삭제, 브리핑 갱신"))
+    assert "명령어가 2개" in reply
+    assert store.get("watchlist", "462350") is not None
+    assert store.latest_job() is None
+    assert "제거: 462350" in service.handle(message("1"))
+
+
 def test_input_numbers_holdings_and_validation(settings, store):
     service = BotService(settings, store)
     service.handle(message("관심종목 추가"))

@@ -77,6 +77,7 @@ HELP = (
     "여러 명령은 쉼표·줄바꿈·그리고로 구분하며, 하나를 선택한 뒤 실행합니다.\n"
     "항목 선택 후에는 필요한 값만 보내세요. 명령어를 다시 입력할 필요가 없습니다.\n"
     "예: 관심종목 → 2 → 삼성전자 → 안내에 따라 종목코드 입력\n"
+    "'관심종목 이노스페이스 추가'처럼 종목명을 먼저 보내도 됩니다.\n"
     "메인: 처음 메뉴 / 취소: 선택·입력 종료\n"
     "설정·보유량·계좌 변경은 별도 확인 코드가 필요합니다.\n"
     "API 비밀 키는 대화에 보내지 마세요."
@@ -181,9 +182,24 @@ def split_commands(text: str) -> list[str]:
     return list(partition(text) or (text,))
 
 
+def stock_request(text: str):
+    """Accept both action-first and name-first watchlist requests."""
+    match = re.fullmatch(r"관심종목\s+(추가|제거|삭제)\s+(.+)", text)
+    if match:
+        action, argument = match.groups()
+    else:
+        match = re.fullmatch(r"관심종목\s+(.+?)\s+(추가|제거|삭제)", text)
+        if not match:
+            return None
+        argument, action = match.groups()
+    return "관심종목 " + ("제거" if action == "삭제" else action), argument.strip()
+
+
 def known_command(text: str) -> bool:
-    return text in SIMPLE or any(
-        text.startswith(prefix + " ") for prefix in PARAMETER_PREFIXES
+    return (
+        text in SIMPLE
+        or any(text.startswith(prefix + " ") for prefix in PARAMETER_PREFIXES)
+        or stock_request(text) is not None
     )
 
 
@@ -329,6 +345,12 @@ class CommandNavigator:
             return self.menu(
                 message, f"명령어가 {len(commands)}개 입니다. 선택해주세요.", commands
             )
+        request = stock_request(text)
+        if request:
+            command, argument = request
+            self.wait_for_input(message, command)
+            pending = self.store.get("command_input", key)
+            return self.input_reply(replace(message, text=argument), pending, execute)
         canonical = ALIASES.get(text, text)
         if canonical == "메인":
             self.menu(message, "", tuple(MENUS))
