@@ -130,6 +130,18 @@ class Store:
         with self.connect() as db:
             db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
 
+    def take(self, kind: str, key: str, expected=None):
+        self.init()
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT value FROM records WHERE kind=? AND key=?", (kind, key)
+            ).fetchone()
+            if row and expected is not None and json.loads(row[0]) != expected:
+                return None
+            db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
+        return json.loads(row[0]) if row else None
+
     def audit(self, action: str, detail: str) -> None:
         with self.connect() as db:
             db.execute(

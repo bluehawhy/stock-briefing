@@ -9,24 +9,9 @@ from app.config import Settings
 from app.connections import registration_link
 from app.models import DataError, Strategy, number, symbol_code
 from app.storage import Store
+from app.commands import CommandNavigator, HELP
 
 KST = ZoneInfo("Asia/Seoul")
-HELP = (
-    "사용 가능한 명령:\n"
-    "오늘 브리핑, 브리핑 이력 [YYYY-MM-DD], 브리핑 갱신\n"
-    "서비스 상태, 연동 상태, 제안 보기 [종목코드]\n"
-    "관심종목 보기 / 추가 005930 삼성전자 / 제거 005930\n"
-    "보유종목, 보유량 설정 005930 0\n"
-    "증권사 연결 한국투자증권, 증권사 연결 해제 한국투자증권\n"
-    "추적 계좌 보기 / 추가 계좌ID / 제거 계좌ID\n"
-    "설정 보기, 설정 도움말, 설정 변경 JSON, 알림 켜기/끄기\n"
-    "모의 운용 기록, 당일 주문 중지/재개\n"
-    "주문 요청 계좌ID 매수|매도 종목코드 수량 지정가격\n"
-    "주문 한도 변경 JSON, 주문 확인 코드, 주문 상태\n"
-    "주문 정정/취소 (지원 상태 안내)\n"
-    "설정·잔고·계좌 변경: 요약 후 '확인 코드' (5분 내 같은 대화)\n"
-    "API 비밀 키는 대화에 보내지 마세요. 실제 주문 제출은 비활성입니다."
-)
 
 
 @dataclass(frozen=True)
@@ -76,7 +61,9 @@ class BotService:
                 return "같은 메시지를 처리 중입니다. 잠시 후 상태를 조회하세요."
         try:
             try:
-                reply = self._command(message)
+                navigator = CommandNavigator(self.store)
+                reply = navigator.route(message, self._command)
+                reply = navigator.paginate(message, reply)
             except DataError as exc:
                 reply = str(exc)
             except (ValueError, TypeError):
@@ -98,7 +85,7 @@ class BotService:
         today = datetime.now(KST).date()
         if command in {"/start", "/help", "도움말"}:
             return HELP
-        if command in {"오늘 브리핑", "브리핑", "/briefing"}:
+        if command == "오늘 브리핑":
             record = self.store.briefing(today)
             if not record:
                 previous = self.store.briefing()
