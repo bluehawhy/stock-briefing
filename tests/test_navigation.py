@@ -43,7 +43,7 @@ def test_help_main_navigation_and_argument_guidance(settings, store):
     assert "메인 카테고리" in help_text and "1. 브리핑" in help_text
     assert "브리핑 갱신" in service.handle(message("선택 1"))
     service.handle(message("관심종목"))
-    assert "추가 입력" in service.handle(message("2번"))
+    assert "종목명 또는 6자리" in service.handle(message("2번"))
     assert store.items("watchlist") == []
     assert "추가" in service.handle(message("관심종목 추가 005930 삼성전자"))
 
@@ -165,3 +165,79 @@ def test_new_explicit_command_replaces_old_menu(settings, store):
     service.handle(message("관심종목 보기"))
     assert "없거나 만료" in service.handle(message("2"))
     assert store.latest_job() is None
+
+
+def test_name_then_code_dialogue_survives_restart(settings, store):
+    service = BotService(settings, store)
+    service.handle(message("관심종목"))
+    assert "값만" in service.handle(message("2"))
+    assert "종목코드만" in service.handle(message("삼성전자", message_id="name"))
+    assert "종목코드만" in service.handle(message("삼성전자", message_id="name"))
+    assert "6자리" in service.handle(message("5930"))
+    assert not store.items("watchlist")
+    reply = BotService(settings, store).handle(message("005930", message_id="code"))
+    assert "삼성전자 (005930)" in reply
+    assert store.get("watchlist", "005930") == {"name": "삼성전자"}
+    assert (
+        BotService(settings, store).handle(message("005930", message_id="code"))
+        == reply
+    )
+
+
+def test_known_names_remove_and_readd(settings, store):
+    service = BotService(settings, store)
+    service.handle(message("관심종목 추가 005930 삼성전자"))
+    service.handle(message("관심종목 제거"))
+    assert "제거: 005930" in service.handle(message("삼성전자"))
+    assert not store.items("watchlist")
+    service.handle(message("관심종목 추가"))
+    assert "삼성전자 (005930)" in service.handle(message("삼성전자"))
+
+
+def test_input_numbers_holdings_and_validation(settings, store):
+    service = BotService(settings, store)
+    service.handle(message("관심종목 추가"))
+    assert "추가:" in service.handle(message("005930 삼성전자"))
+    service.handle(message("보유량 설정"))
+    assert "수량만" in service.handle(message("005930"))
+    assert "정수" in service.handle(message("-1"))
+    reply = service.handle(message("0"))
+    assert "확인" in reply
+    assert not store.items("manual_holdings")
+
+
+def test_input_expiry_cancel_override_and_channel(settings, store):
+    service = BotService(settings, store)
+    service.handle(message("관심종목 추가"))
+    assert "지원하지 않는" in service.handle(
+        message("삼성전자", channel="kakao", user="k1")
+    )
+    service.handle(message("취소"))
+    assert store.get("command_input", "telegram:42:42") is None
+    service.handle(message("관심종목 추가"))
+    service.handle(message("메인"))
+    assert store.get("command_input", "telegram:42:42") is None
+    service.handle(message("관심종목 추가"))
+    pending = store.get("command_input", "telegram:42:42")
+    pending["expires_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=1)
+    ).isoformat()
+    store.put("command_input", "telegram:42:42", pending)
+    assert "만료" in service.handle(message("005930"))
+    service.handle(message("관심종목 추가"))
+    assert "명령어가 2개" in service.handle(message("오늘 브리핑, 브리핑 갱신"))
+    assert store.get("command_input", "telegram:42:42") is None
+    assert not store.items("watchlist")
+
+
+def test_json_input_and_duplicate_names(settings, store, strategy):
+    service = BotService(settings, store)
+    service.handle(message("설정 변경"))
+    assert "확인" in service.handle(message(json.dumps(strategy.dict(), indent=2)))
+    assert store.get("settings", "strategy") is None
+    service.handle(message("관심종목 추가 005930 동일이름"))
+    service.handle(message("관심종목 추가 000660 동일이름"))
+    service.handle(message("관심종목 제거"))
+    assert "중복" in service.handle(message("동일이름"))
+    assert len(store.items("watchlist")) == 2
+    assert "제거: 000660" in service.handle(message("000660"))

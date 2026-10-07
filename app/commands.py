@@ -55,6 +55,19 @@ USAGES = {
     "주문 정정": "주문 정정 (현재 조회용 연결은 정정을 지원하지 않습니다.)",
     "주문 취소": "주문 취소 (현재 조회용 연결은 취소를 지원하지 않습니다.)",
 }
+INPUT_PROMPTS = {
+    "관심종목 추가": "추가할 종목명 또는 6자리 코드를 보내세요.\n예: 삼성전자 / 005930 / 005930 삼성전자",
+    "관심종목 제거": "제거할 종목명 또는 6자리 코드를 보내세요.",
+    "보유량 설정": "종목코드와 수량을 보내세요.\n예: 005930 10 (코드만 보내면 수량을 이어서 물어봅니다.)",
+    "추적 계좌 추가": "추가할 계좌 ID만 보내세요.",
+    "추적 계좌 제거": "제거할 계좌 ID만 보내세요.",
+    "설정 변경": "설정 JSON만 보내세요. 필드는 '설정 도움말'에서 확인할 수 있습니다.",
+    "주문 한도 변경": "주문 한도 JSON만 보내세요.\n예: "
+    + USAGES["주문 한도 변경"].removeprefix("주문 한도 변경 "),
+    "주문 요청": "계좌ID 매수|매도 종목코드 수량 지정가격을 보내세요.",
+    "주문 확인": "확인 코드만 보내세요.",
+}
+
 HELP = (
     "메인 카테고리를 선택해주세요.\n"
     + "\n".join(f"{i}. {name}" for i, name in enumerate(MENUS, 1))
@@ -62,7 +75,9 @@ HELP = (
     "예: 브리핑 → 오늘 브리핑 / 브리핑 갱신 / 브리핑 이력 / 제안 보기\n"
     "'오늘 브리핑'처럼 전체 명령을 보내면 바로 실행합니다.\n"
     "여러 명령은 쉼표·줄바꿈·그리고로 구분하며, 하나를 선택한 뒤 실행합니다.\n"
-    "메인: 처음 메뉴 / 취소: 선택 종료\n"
+    "항목 선택 후에는 필요한 값만 보내세요. 명령어를 다시 입력할 필요가 없습니다.\n"
+    "예: 관심종목 → 2 → 삼성전자 → 안내에 따라 종목코드 입력\n"
+    "메인: 처음 메뉴 / 취소: 선택·입력 종료\n"
     "설정·보유량·계좌 변경은 별도 확인 코드가 필요합니다.\n"
     "API 비밀 키는 대화에 보내지 마세요."
 )
@@ -201,6 +216,64 @@ class CommandNavigator:
             + "\n번호 또는 항목명을 보내세요. (5분 내, 취소 가능)"
         )
 
+    def wait_for_input(self, message, command, **values):
+        self.store.put(
+            "command_input",
+            self.key(message),
+            {
+                "command": command,
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(minutes=5)
+                ).isoformat(),
+                **values,
+            },
+        )
+
+    def input_reply(self, message, pending, execute):
+        text = message.text.strip()
+        command = pending["command"]
+        if pending.get("name"):
+            if not re.fullmatch(r"[0-9]{6}", text):
+                return "6자리 종목코드만 보내세요. (취소 가능)"
+            arguments = text + " " + pending["name"]
+        elif pending.get("symbol"):
+            if not re.fullmatch(r"[0-9]+", text):
+                return "수량을 0 이상의 정수로 보내세요. (취소 가능)"
+            arguments = pending["symbol"] + " " + text
+        elif command in {"관심종목 추가", "관심종목 제거"}:
+            arguments = text
+            if not re.match(r"^[0-9]{6}(?:\s|$)", text):
+                if text.isdecimal():
+                    return "종목코드는 6자리입니다. 다시 보내세요. (취소 가능)"
+                if len(text) > 40:
+                    return "종목명은 40자 이내로 보내세요. (취소 가능)"
+                names = dict(self.store.items("symbol_names"))
+                names.update(dict(self.store.items("watchlist")))
+                matches = [
+                    code for code, value in names.items() if value["name"] == text
+                ]
+                if len(matches) == 1:
+                    arguments = matches[0] + (
+                        " " + text if command.endswith("추가") else ""
+                    )
+                elif command.endswith("추가"):
+                    self.wait_for_input(message, command, name=text)
+                    return f"'{text}'의 코드를 확인할 수 없습니다. 6자리 종목코드만 보내세요. (5분 내, 취소 가능)"
+                else:
+                    return "제거할 종목을 찾을 수 없거나 이름이 중복됩니다. 6자리 코드만 보내세요."
+        elif command == "보유량 설정" and re.fullmatch(r"[0-9]{6}", text):
+            self.wait_for_input(message, command, symbol=text)
+            return "보유 수량만 보내세요. (0 이상의 정수, 5분 내, 취소 가능)"
+        else:
+            arguments = text
+        if not self.store.take("command_input", self.key(message), pending):
+            return "입력이 이미 처리되었습니다. 항목을 다시 선택해주세요."
+        try:
+            return execute(replace(message, text=command + " " + arguments))
+        except Exception:
+            self.store.put("command_input", self.key(message), pending)
+            raise
+
     def route(self, message, execute):
         text = message.text.strip()
         key = self.key(message)
@@ -220,7 +293,19 @@ class CommandNavigator:
         self.store.delete("reply_pages", key)
         if text == "취소":
             self.store.delete("command_choices", key)
-            return "선택을 취소했습니다. '메인'으로 카테고리를 다시 볼 수 있습니다."
+            self.store.delete("command_input", key)
+            return (
+                "선택·입력을 취소했습니다. '메인'으로 카테고리를 다시 볼 수 있습니다."
+            )
+        pending = self.store.get("command_input", key)
+        if pending:
+            if known_command(text) or len(split_commands(text)) > 1:
+                self.store.delete("command_input", key)
+            elif pending["expires_at"] <= datetime.now(timezone.utc).isoformat():
+                self.store.delete("command_input", key)
+                return "입력 시간이 만료되었습니다. 항목을 다시 선택해주세요."
+            else:
+                return self.input_reply(message, pending, execute)
         if re.fullmatch(r"(?:선택\s*)?[0-9]+번?", text):
             selection = self.store.get("command_choices", key)
             if (
@@ -252,8 +337,11 @@ class CommandNavigator:
             return self.menu(
                 message, f"[{canonical}] 실행할 항목을 선택해주세요.", MENUS[canonical]
             )
-        if text in USAGES and text not in {"주문 정정", "주문 취소"}:
-            return "추가 입력이 필요합니다. 다음 형식으로 보내세요.\n" + USAGES[text]
+        if text in INPUT_PROMPTS:
+            self.wait_for_input(message, text)
+            return (
+                INPUT_PROMPTS[text] + "\n명령어 없이 값만 보내세요. (5분 내, 취소 가능)"
+            )
         return execute(replace(message, text=text))
 
     @staticmethod

@@ -386,6 +386,8 @@ class BotService:
                 )
             else:
                 Store.put_in(db, "watchlist", symbol, value)
+                if value["name"] != symbol:
+                    Store.put_in(db, "symbol_names", symbol, value)
             db.execute(
                 "DELETE FROM records WHERE kind='proposals' AND key=?", (symbol,)
             )
