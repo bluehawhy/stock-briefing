@@ -11,19 +11,30 @@
 
 ```bash
 cd ~/source/stock-briefing
-git pull origin main
-docker compose up -d --build
-docker compose ps
-curl -fsS http://127.0.0.1:8000/healthz
+git pull --ff-only origin main
+bash scripts/update-server.sh
 ```
 
-| 명령어 | 역할 |
-| --- | --- |
-| cd ~/source/stock-briefing | 프로젝트 폴더로 이동 |
-| git pull origin main | main의 최신 코드 가져오기 |
-| docker compose up -d --build | 최신 코드로 이미지를 빌드하고 서비스를 백그라운드 실행 |
-| docker compose ps | api와 telegram 서비스 상태 확인 |
-| curl -fsS http://127.0.0.1:8000/healthz | API 정상 응답 확인 |
+업데이트 스크립트는 최신 main을 가져온 뒤, 현재 커밋 ID와 빌드 시작 시각을 이미지에 기록합니다.
+api·telegram·정기 실행 worker를 같은 정보로 빌드하고 api·telegram을 재시작한 다음 상태와 API 응답을 확인합니다.
+main 브랜치가 아니거나 커밋되지 않은 변경이 있으면 중단합니다.
+
+업데이트가 끝나면 텔레그램에 아래 명령어를 입력합니다.
+
+```text
+버전
+```
+
+응답 형식:
+
+```text
+빌드시간: yyyy-mm-dd hh:mm:ss
+빌드번호: 40자리 커밋아이디
+```
+
+빌드시간은 한국시간(Asia/Seoul) 기준입니다. 빌드번호는 실행 중인 이미지에 포함된 코드의 커밋 ID이며, 컨테이너 재시작이나 이후 git pull만으로 바뀌지 않습니다.
+빌드정보 없이 만든 이전 이미지나 로컬 실행은 정보 없음으로 표시됩니다.
+이후 업데이트에도 위 스크립트를 사용하면 두 값이 자동으로 갱신됩니다.
 
 api와 telegram이 모두 실행 중(Up)인지 확인합니다.
 git pull 또는 빌드에서 오류가 발생하면 업데이트 완료로 보지 말고 오류 내용을 확인합니다.

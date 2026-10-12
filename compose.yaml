@@ -1,3 +1,9 @@
+x-build: &build
+  context: .
+  args:
+    BUILD_TIME: ${BUILD_TIME:-}
+    BUILD_COMMIT: ${BUILD_COMMIT:-unknown}
+
 x-logging: &logging
   driver: json-file
   options:
@@ -6,7 +12,7 @@ x-logging: &logging
 
 services:
   api:
-    build: .
+    build: *build
     env_file: .env
     volumes:
       - ./:/data
@@ -16,7 +22,7 @@ services:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
   telegram:
-    build: .
+    build: *build
     env_file: .env
     command: ["python", "-m", "app.cli", "poll"]
     volumes:
@@ -25,7 +31,7 @@ services:
     logging: *logging
     restart: unless-stopped
   worker:
-    build: .
+    build: *build
     env_file: .env
     command: ["python", "-m", "app.cli", "run-daily"]
     volumes:

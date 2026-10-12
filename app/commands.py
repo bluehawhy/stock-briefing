@@ -29,7 +29,7 @@ MENUS = {
         "당일 주문 중지",
         "당일 주문 재개",
     ),
-    "상태": ("서비스 상태", "연동 상태"),
+    "상태": ("서비스 상태", "연동 상태", "버전"),
     "모의 운용": ("모의 운용 기록",),
 }
 ALIASES = {
@@ -86,7 +86,7 @@ SIMPLE = (
     set(MENUS)
     | set(ALIASES)
     | {item for options in MENUS.values() for item in options}
-    | {"/status", "확인", "취소", "다음"}
+    | {"/status", "/version", "확인", "취소", "다음"}
 )
 PARAMETER_PREFIXES = sorted(
     set(USAGES) | {"브리핑 이력", "제안 보기", "확인", "관심종목 삭제"},

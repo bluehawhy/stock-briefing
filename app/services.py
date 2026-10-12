@@ -10,6 +10,7 @@ from app.connections import registration_link
 from app.models import DataError, Strategy, number, symbol_code
 from app.storage import Store
 from app.commands import CommandNavigator, HELP
+from app.version import version_text
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -85,6 +86,8 @@ class BotService:
         today = datetime.now(KST).date()
         if command in {"/start", "/help", "도움말"}:
             return HELP
+        if command in {"버전", "/version"}:
+            return version_text()
         if command == "오늘 브리핑":
             record = self.store.briefing(today)
             if not record:
