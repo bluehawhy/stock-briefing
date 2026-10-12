@@ -69,7 +69,9 @@ async def poll(settings: Settings, store: Store) -> None:
                     if isinstance(message.get("text"), str):
                         user_id = str(user.get("id", ""))
                         chat_id = str(chat.get("id", ""))
-                        reply = service.handle(
+                        # Market collection is blocking; keep the event loop responsive.
+                        reply = await asyncio.to_thread(
+                            service.handle,
                             InboundMessage(
                                 channel="telegram",
                                 user_id=user_id,

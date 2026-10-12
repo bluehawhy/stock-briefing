@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from hmac import compare_digest
 
 from fastapi import APIRouter, HTTPException, Request
@@ -35,7 +37,8 @@ async def kakao_skill(secret: str, request: Request) -> dict:
             raise ValueError("invalid fields")
     except (KeyError, TypeError, ValueError):
         return skill_response("메시지를 읽지 못했습니다. 다시 시도해 주세요.")
-    answer = BotService(settings, Store(settings.db_path)).handle(
+    answer = await asyncio.to_thread(
+        BotService(settings, Store(settings.db_path)).handle,
         InboundMessage(
             channel="kakao",
             user_id=user_id,

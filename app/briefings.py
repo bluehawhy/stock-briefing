@@ -420,7 +420,7 @@ async def process_jobs(settings: Settings, store: Store) -> None:
         try:
             await asyncio.to_thread(BriefingEngine(settings, store).generate)
             store.finish_job(
-                job, "done", "브리핑 생성 완료. 오늘 브리핑으로 조회하세요."
+                job, "done", "브리핑 생성 완료. 브리핑 이력에서 저장된 결과를 확인하세요."
             )
         except Exception as exc:
             LOG.warning("Refresh job failed (%s)", type(exc).__name__)

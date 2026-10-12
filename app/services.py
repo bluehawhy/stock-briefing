@@ -89,21 +89,10 @@ class BotService:
         if command in {"버전", "/version"}:
             return version_text()
         if command == "오늘 브리핑":
-            record = self.store.briefing(today)
-            if not record:
-                previous = self.store.briefing()
-                return (
-                    "오늘 브리핑이 없습니다. '브리핑 갱신'으로 생성을 요청하세요."
-                    + (
-                        f"\n최근 기록은 {previous[0]}입니다. '브리핑 이력 {previous[0]}'으로 조회하세요."
-                        if previous
-                        else ""
-                    )
-                )
-            return f"[저장된 브리핑: {record[0]}]\n{record[1]}"
-        if command == "브리핑 갱신":
-            job = self.store.enqueue_refresh()
-            return f"브리핑 갱신 요청 #{job}. '서비스 상태'로 진행 확인 후 '오늘 브리핑'을 조회하세요."
+            from app.briefings import BriefingEngine
+
+            body = BriefingEngine(self.settings, self.store).generate()
+            return f"[새로 생성한 브리핑: {today}]\n{body}"
         if command == "브리핑 이력":
             self.store.init()
             with self.store.connect() as db:
@@ -489,4 +478,4 @@ class BotService:
             raise DataError("미지원 확인 작업")
         if action in {"strategy", "manual_holding", "tracking", "disconnect"}:
             db.execute("DELETE FROM records WHERE kind='proposals'")
-        return "변경을 적용했습니다. 분석에 반영하려면 '브리핑 갱신'을 요청하세요."
+        return "변경을 적용했습니다. 분석에 반영하려면 '오늘 브리핑'을 입력하세요."
