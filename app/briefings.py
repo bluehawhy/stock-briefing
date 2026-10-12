@@ -119,14 +119,27 @@ class BriefingEngine:
                 holdings_error = (
                     "추적 계좌 보유량 조회 실패: 이전 잔고를 재사용하지 않습니다."
                 )
-        watch = dict(self.store.items("watchlist"))
-        for snapshot in snapshots:
-            for symbol in snapshot["quantities"]:
-                watch.setdefault(symbol, {"name": symbol})
+        interests = dict(self.store.items("watchlist"))
+        manual_holdings = dict(self.store.items("manual_holdings")) if not tracked else {}
+        held_symbols = {
+            symbol
+            for snapshot in snapshots
+            for symbol, quantity in snapshot["quantities"].items()
+            if quantity > 0
+        }
+        held_symbols.update(
+            symbol for symbol, holding in manual_holdings.items()
+            if holding.get("quantity", 0) > 0
+        )
+        watch = dict(interests)
+        for symbol in held_symbols:
+            watch.setdefault(
+                symbol, self.store.get("symbol_names", symbol, {"name": symbol})
+            )
         if not watch:
             return f"기준 거래일: {expected}\n관심종목·추적 계좌 보유종목이 없습니다. '관심종목 추가 005930 삼성전자'로 등록하세요."
         budget = strategy.buy_budget
-        results = []
+        results = {}
         complete = 0
         for symbol, info in sorted(watch.items()):
             if not self.store.renew_lease("collection", self.collection_owner):
@@ -193,7 +206,7 @@ class BriefingEngine:
                     and not self.store.get("recommendations", key)
                 ):
                     self.store.put("recommendations", key, result)
-                results.append(self._format(result))
+                results[symbol] = self._format(result)
                 complete += 1
             except (DataError, KeyError, ValueError, TypeError) as exc:
                 reason = (
@@ -209,7 +222,7 @@ class BriefingEngine:
                         "at": now.isoformat(),
                     },
                 )
-                results.append(
+                results[symbol] = (
                     f"{info.get('name', symbol)} ({symbol})\n데이터 확인 필요: {reason}\n의견·수량 보류"
                 )
                 self.store.put(
@@ -239,10 +252,18 @@ class BriefingEngine:
                 "last_complete",
                 {"day": expected.isoformat(), "at": now.isoformat()},
             )
+        sections = []
+        for title, symbols in (("보유종목", held_symbols), ("관심종목", set(interests))):
+            entries = [results[symbol] for symbol in sorted(symbols)]
+            section = f"[{title}]\n" + ("\n\n".join(entries) or "등록된 종목이 없습니다.")
+            if title == "보유종목" and holdings_error:
+                section += f"\n데이터 확인 필요: {holdings_error}"
+            sections.append(section)
         return (
             f"기준 거래일: {expected} (전 거래일 종가, 주문 자동 제출 없음)\n"
             f"매수 예산: {strategy.buy_budget:,}원 / 제안 후 잔여: {budget:,}원\n"
-            "종목코드 순서로 공통 매수 예산 배분\n\n" + "\n\n".join(results)
+            "종목코드 순서로 공통 매수 예산 배분 (중복 종목은 한 번만 계산)\n\n"
+            + "\n\n".join(sections)
         )
 
     def _collect(self, provider, symbol, trading, expected, strategy):
