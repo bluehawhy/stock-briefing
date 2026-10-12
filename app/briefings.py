@@ -9,6 +9,7 @@ from app.analysis import indicators, opinion, paper_result, size
 from app.config import Settings
 from app.models import DataError, Strategy
 from app.providers import KisProvider
+from app.public_market import PublicMarketProvider, watch_opinion, format_watch
 from app.storage import Store
 
 LOG = logging.getLogger(__name__)
@@ -43,8 +44,24 @@ class BriefingEngine:
         provider = self.provider
         try:
             try:
-                provider = provider or KisProvider(self.settings, self.store)
-                body = self._generate(day, now, provider)
+                watch_body = self._generate_watchlist(day, now)
+                has_holdings = any(a.get("tracked") for _, a in self.store.items("accounts")) or any(
+                    h.get("quantity", 0) > 0 for _, h in self.store.items("manual_holdings")
+                )
+                holdings_body = "[보유종목]\n등록된 종목이 없습니다."
+                if has_holdings:
+                    try:
+                        provider = provider or KisProvider(self.settings, self.store)
+                        holdings_body = self._generate(day, now, provider)
+                    except (DataError, KeyError, TypeError, ValueError) as exc:
+                        reason = str(exc) if isinstance(exc, DataError) else "보유종목 데이터 오류"
+                        holdings_body = f"[보유종목]\n데이터 확인 필요: {reason}\n의견·수량 보류"
+                        for symbol, _ in self.store.items("proposals"):
+                            self.store.put("proposals", symbol, {
+                                "action": "데이터 확인 필요", "reason": reason,
+                                "day": day.isoformat(), "at": now.isoformat(),
+                            })
+                body = f"발송일: {day}\n\n{holdings_body}\n\n{watch_body}"
                 status = "generated"
             except (DataError, KeyError, TypeError, ValueError) as exc:
                 # Never copy an arbitrary provider exception/response into chat or logs.
@@ -75,6 +92,61 @@ class BriefingEngine:
             if owned_provider and provider is not None:
                 provider.close()
             self.store.release_lease("collection", lease)
+
+    def _generate_watchlist(self, day: date, now: datetime) -> str:
+        interests = dict(self.store.items("watchlist"))
+        if not interests:
+            return "[관심종목]\n등록된 종목이 없습니다."
+        public = PublicMarketProvider()
+        results = []
+        try:
+            try:
+                strategy = Strategy.parse(self.store.get("settings", "strategy") or {})
+                # Observed reference-stock sessions; never synthetic weekday calendars.
+                end = day - timedelta(days=1)
+                reference = public.daily_bars("005930", end)
+                expected = reference[-1].day
+                if (end - expected).days > 14:
+                    raise DataError("공개 일봉 기준일이 오래되었습니다.")
+                trading = [bar.day for bar in reference]
+            except (DataError, KeyError, ValueError, TypeError) as exc:
+                reason = str(exc) if isinstance(exc, DataError) else "공개 시장 데이터 오류"
+                for symbol, info in sorted(interests.items()):
+                    results.append(f"{info.get('name', symbol)} ({symbol})\n의견 보류: {reason}")
+                    self.store.put("watch_proposals", symbol, {
+                        "action": "데이터 확인 필요", "reason": reason,
+                        "at": now.isoformat(),
+                    })
+            else:
+                for symbol, info in sorted(interests.items()):
+                    if not self.store.renew_lease("collection", self.collection_owner):
+                        raise DataError("수집 예약이 만료되었습니다. 다시 갱신하세요.")
+                    try:
+                        bars = reference if symbol == "005930" else public.daily_bars(symbol, end)
+                        values, action, score = watch_opinion(bars, expected, strategy, trading)
+                        self.store.put("watch_proposals", symbol, {
+                            "symbol": symbol, "name": info.get("name", symbol),
+                            "day": expected.isoformat(), "action": action,
+                            "indicators": values, "score": score,
+                            "strategy": strategy.dict(), "at": now.isoformat(),
+                            "source": "naver_public", "basis": "price_volume_only",
+                        })
+                        results.append(format_watch(
+                            info.get("name", symbol), symbol, expected, values, action, strategy
+                        ))
+                    except (DataError, KeyError, ValueError, TypeError) as exc:
+                        reason = str(exc) if isinstance(exc, DataError) else "공개 일봉 데이터 오류"
+                        results.append(f"{info.get('name', symbol)} ({symbol})\n의견 보류: {reason}")
+                        self.store.put("watch_proposals", symbol, {
+                            "action": "데이터 확인 필요", "reason": reason,
+                            "at": now.isoformat(),
+                        })
+        finally:
+            public.close()
+        return (
+            "[관심종목]\n공개 일봉 기준 · 가격/거래량 추세만 반영 (기관·외국인 수급 제외)\n\n"
+            + "\n\n".join(results)
+        )
 
     def _generate(self, day: date, now: datetime, provider) -> str:
         yesterday = day - timedelta(days=1)
@@ -119,7 +191,7 @@ class BriefingEngine:
                 holdings_error = (
                     "추적 계좌 보유량 조회 실패: 이전 잔고를 재사용하지 않습니다."
                 )
-        interests = dict(self.store.items("watchlist"))
+        interests = {}
         manual_holdings = dict(self.store.items("manual_holdings")) if not tracked else {}
         held_symbols = {
             symbol
@@ -253,7 +325,7 @@ class BriefingEngine:
                 {"day": expected.isoformat(), "at": now.isoformat()},
             )
         sections = []
-        for title, symbols in (("보유종목", held_symbols), ("관심종목", set(interests))):
+        for title, symbols in (("보유종목", held_symbols),):
             entries = [results[symbol] for symbol in sorted(symbols)]
             section = f"[{title}]\n" + ("\n\n".join(entries) or "등록된 종목이 없습니다.")
             if title == "보유종목" and holdings_error:

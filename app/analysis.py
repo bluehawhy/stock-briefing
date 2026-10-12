@@ -13,10 +13,11 @@ def indicators(
     expected: date,
     s: Strategy,
     trading_days: list[date],
+    *, include_flows: bool = True,
 ) -> dict:
     bars = sorted((b for b in bars if b.day <= expected), key=lambda b: b.day)
     flows_by_day = {f.day: f for f in flows}
-    required = max(s.long_ma + 1, s.volume_window + 1, s.flow_window)
+    required = max(s.long_ma + 1, s.volume_window + 1, s.flow_window if include_flows else 0)
     if len(bars) < required or not bars or bars[-1].day != expected:
         raise DataError("일봉 부족 또는 기준 거래일 불일치")
     for bar in bars:
@@ -30,7 +31,7 @@ def indicators(
     if bars[0].day > min(required_days):
         raise DataError("52주 이력 부족")
     recent = bars[-s.flow_window :]
-    if any(b.day not in flows_by_day for b in bars[-s.flow_window - 1 :]):
+    if include_flows and any(b.day not in flows_by_day for b in bars[-s.flow_window - 1 :]):
         raise DataError("기관·외국인 수급 누락 또는 기준일 불일치")
     average_volume = mean(b.volume for b in bars[-s.volume_window - 1 : -1])
     if average_volume <= 0 or bars[-1].volume == 0:
@@ -45,7 +46,7 @@ def indicators(
     )
     previous_short = mean(b.close for b in bars[-s.short_ma - 1 : -1])
     previous_long = mean(b.close for b in bars[-s.long_ma - 1 : -1])
-    return {
+    values = {
         "close": bars[-1].close,
         "short_ma": short,
         "long_ma": long,
@@ -59,22 +60,18 @@ def indicators(
         "range_position": (bars[-1].close - low) / (high - low),
         "range_change": (bars[-1].close - bars[-2].close) / (high - low),
         "volume_ratio": bars[-1].volume / average_volume,
-        "institution": sum(flows_by_day[b.day].institution for b in recent),
-        "foreign": sum(flows_by_day[b.day].foreign for b in recent),
-        "institution_previous": sum(
-            flows_by_day[b.day].institution
-            for b in bars[-s.flow_window - 1 : -1]
-            if b.day in flows_by_day
-        ),
-        "foreign_previous": sum(
-            flows_by_day[b.day].foreign
-            for b in bars[-s.flow_window - 1 : -1]
-            if b.day in flows_by_day
-        ),
     }
+    if include_flows:
+        values.update({
+            "institution": sum(flows_by_day[b.day].institution for b in recent),
+            "foreign": sum(flows_by_day[b.day].foreign for b in recent),
+            "institution_previous": sum(flows_by_day[b.day].institution for b in bars[-s.flow_window - 1 : -1]),
+            "foreign_previous": sum(flows_by_day[b.day].foreign for b in bars[-s.flow_window - 1 : -1]),
+        })
+    return values
 
 
-def opinion(i: dict, s: Strategy) -> tuple[str, int]:
+def opinion(i: dict, s: Strategy, *, include_flows: bool = True) -> tuple[str, int]:
     trend = (
         1 if i["short_ma"] > i["long_ma"] else -1 if i["short_ma"] < i["long_ma"] else 0
     )
@@ -92,9 +89,12 @@ def opinion(i: dict, s: Strategy) -> tuple[str, int]:
         if i["range_position"] >= s.range_sell_min
         else 0,
         "volume": trend if i["volume_ratio"] >= s.volume_ratio else 0,
-        "institution": (i["institution"] > 0) - (i["institution"] < 0),
-        "foreign": (i["foreign"] > 0) - (i["foreign"] < 0),
     }
+    if include_flows:
+        signals.update({
+            "institution": (i["institution"] > 0) - (i["institution"] < 0),
+            "foreign": (i["foreign"] > 0) - (i["foreign"] < 0),
+        })
     score = sum(signal * s.weights[key] for key, signal in signals.items())
     return (
         "매수" if score >= s.buy_score else "매도" if score <= s.sell_score else "관망",
