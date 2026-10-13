@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import logging
+import math
+
 from dataclasses import asdict, dataclass
 from datetime import date
 from decimal import Decimal
+
+
+LOG = logging.getLogger(__name__)
 
 
 class DataError(ValueError):
@@ -89,8 +95,20 @@ class Strategy:
 
     @classmethod
     def parse(cls, values: dict) -> Strategy:
+        reason = "invalid_strategy"
+        field = "-"
         try:
-            if set(values) != set(cls.__dataclass_fields__):
+            if not isinstance(values, dict):
+                reason = "expected_object"
+                raise ValueError
+            missing = sorted(set(cls.__dataclass_fields__) - set(values))
+            if missing or set(values) != set(cls.__dataclass_fields__):
+                LOG.warning(
+                    "Strategy validation failed: reason=field_mismatch missing=%s unexpected_count=%d",
+                    ",".join(missing) or "-",
+                    len(set(values) - set(cls.__dataclass_fields__)),
+                )
+                reason = "field_mismatch"
                 raise ValueError
             integer_fields = {
                 "short_ma",
@@ -103,17 +121,21 @@ class Strategy:
                 "max_position",
                 "evaluation_days",
             }
-            parsed = {
-                k: number(v, negative=k == "sell_score")
-                if k in integer_fields
-                else float(v)
-                for k, v in values.items()
-                if k != "weights"
-            }
-            import math
-
-            if any(not math.isfinite(v) for v in parsed.values()):
-                raise ValueError
+            parsed = {}
+            for k, v in values.items():
+                if k == "weights":
+                    continue
+                field = k
+                reason = "invalid_number"
+                parsed[k] = (
+                    number(v, negative=k == "sell_score")
+                    if k in integer_fields else float(v)
+                )
+                if not math.isfinite(parsed[k]):
+                    reason = "non_finite_number"
+                    raise ValueError
+            field = "weights"
+            reason = "invalid_weight_fields"
             weight_keys = {
                 "ma_trend",
                 "price_position",
@@ -128,28 +150,44 @@ class Strategy:
                 or set(values["weights"]) != weight_keys
             ):
                 raise ValueError
-            weights = {k: number(v) for k, v in values["weights"].items()}
+            weights = {}
+            for k, v in values["weights"].items():
+                field = "weights." + k
+                reason = "invalid_weight"
+                weights[k] = number(v)
             maximum_score = sum(weights.values())
             if maximum_score == 0 or any(v > 100 for v in weights.values()):
+                field = "weights"
+                reason = "weight_range_or_zero_sum"
                 raise ValueError
             parsed["weights"] = weights
             s = cls(**parsed)
-            if not (
-                1 <= s.short_ma < s.long_ma <= 250
-                and 1 <= s.volume_window <= 250
-                and 1 <= s.flow_window <= 30
-                and s.volume_ratio > 0
-                and 0 <= s.range_buy_max < s.range_sell_min <= 1
-                and 1 <= s.buy_score <= maximum_score
-                and -maximum_score <= s.sell_score <= -1
-                and 0 < s.sell_fraction <= 1
-                and 0 < s.holdings_max_age_hours <= 8760
-                and 1 <= s.evaluation_days <= 250
-                and all(0 <= v < 10000 for v in (s.fee_bps, s.tax_bps, s.slippage_bps))
-            ):
+            checks = {
+                "short_ma,long_ma": 1 <= s.short_ma < s.long_ma <= 250,
+                "volume_window": 1 <= s.volume_window <= 250,
+                "flow_window": 1 <= s.flow_window <= 30,
+                "volume_ratio": s.volume_ratio > 0,
+                "range_buy_max,range_sell_min": 0 <= s.range_buy_max < s.range_sell_min <= 1,
+                "buy_score": 1 <= s.buy_score <= maximum_score,
+                "sell_score": -maximum_score <= s.sell_score <= -1,
+                "sell_fraction": 0 < s.sell_fraction <= 1,
+                "holdings_max_age_hours": 0 < s.holdings_max_age_hours <= 8760,
+                "evaluation_days": 1 <= s.evaluation_days <= 250,
+                "fee_bps": 0 <= s.fee_bps < 10000,
+                "tax_bps": 0 <= s.tax_bps < 10000,
+                "slippage_bps": 0 <= s.slippage_bps < 10000,
+            }
+            invalid = [key for key, valid in checks.items() if not valid]
+            if invalid:
+                field = ",".join(invalid)
+                reason = "out_of_range"
                 raise ValueError
             return s
         except (TypeError, ValueError, OverflowError):
+            if reason != "field_mismatch":
+                LOG.warning(
+                    "Strategy validation failed: reason=%s field=%s", reason, field
+                )
             raise DataError(
                 "전략 설정이 누락되었거나 범위를 벗어났습니다. 설정 도움말을 확인하세요."
             ) from None
