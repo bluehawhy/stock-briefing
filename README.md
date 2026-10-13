@@ -18,39 +18,126 @@
 
 **실계좌 API 키/권한 검증과 투자 전략·예산 설정은 운영자 설정이 필요합니다.** 임의의 투자 기간·가중치·예산을 자동 기본값으로 적용하지 않습니다. 미래에셋 국내주식 API는 확인된 명세·개인 이용 권한이 없어 지원 불가 상태를 안내하는 어댑터만 제공합니다. 모의 KIS 환경은 일정·수급 지원이 확인되지 않으면 분석을 보류합니다.
 
-## 기존 Ubuntu 서버 업데이트
+## 1. Ubuntu 초기 설치·설정 (최초 1회)
 
-서버에서 아래 명령을 실행합니다. 개발 검증에서는 이미지 빌드를 하지 않았습니다. 서버가 새 Python 코드·의존성을 실행하려면 운영 이미지 갱신이 필요합니다.
+Ubuntu에 Git과 Docker, Docker Compose 플러그인이 설치되어 있고 현재 사용자로 Docker를 실행할 수 있어야 합니다. 아래 명령으로 확인합니다.
+
+```bash
+git --version
+docker --version
+docker compose version
+```
+
+### 1-1. 프로젝트와 환경변수 준비
+
+```bash
+mkdir -p ~/source
+cd ~/source
+git clone https://github.com/bluehawhy/stock-briefing.git
+cd stock-briefing
+cp .env.example .env
+chmod 600 .env
+mkdir -p ../stock-briefing-secrets
+chmod 700 ../stock-briefing-secrets
+nano .env
+```
+
+`.env`에서 다음 값을 본인 환경에 맞게 입력합니다. 텔레그램 봇 생성과 사용자 ID 확인, 선택 사항인 카카오 연결은 [봇 설정 안내](docs/bot-setup.md)를 참고하세요.
+
+| 변수 | 초기 설정 |
+| --- | --- |
+| `SQLITE_PATH` | `/data/stock-briefing.db` 유지 |
+| `TELEGRAM_BOT_TOKEN` | BotFather에서 발급받은 봇 토큰 |
+| `TELEGRAM_ALLOWED_USER_IDS` | 본인의 숫자 사용자 ID (정기 발송은 1명만 지정) |
+| `BROKER_SECRETS_DIR` | `../stock-briefing-secrets` |
+| `MASTER_KEY_FILE` | `/run/stock-briefing-secrets/master.key` |
+| `PUBLIC_BASE_URL` | 증권사 등록 화면을 제공할 본인의 HTTPS 주소 |
+| `KIS_ENVIRONMENT` | 실계좌 조회는 `live` |
+
+증권사 등록 화면을 사용하려면 HTTPS 프록시에 `/broker/register/*` 경로를 연결합니다. 카카오를 사용한다면 `/kakao/skill/*`도 연결합니다. [Caddy 설정 예시](deploy/Caddyfile.example)를 참고하고, 인증정보가 들어가는 등록 경로의 접근 로그는 기록하지 않도록 설정하세요. 공개 일봉을 사용하는 관심종목 브리핑에는 증권사 연결이 필요하지 않습니다.
+
+### 1-2. 이미지 빌드·암호화 키 생성·서비스 시작
 
 ```bash
 cd ~/source/stock-briefing
-git pull --ff-only
-mkdir -p ../stock-briefing-secrets
-chmod 700 ../stock-briefing-secrets
+export BUILD_TIME="$(TZ=Asia/Seoul date '+%Y-%m-%dT%H:%M:%S%:z')"
+export BUILD_COMMIT="$(git rev-parse HEAD)"
+docker compose --profile job build api telegram worker
 ```
 
-기존 `.env`에 `.env.example`의 신규 변수만 추가합니다. 기존 텔레그램·카카오 값을 유지하세요.
-
-```dotenv
-PUBLIC_BASE_URL=https://본인도메인
-BROKER_SECRETS_DIR=../stock-briefing-secrets
-MASTER_KEY_FILE=/run/stock-briefing-secrets/master.key
-KIS_ENVIRONMENT=live
-```
-
-`PUBLIC_BASE_URL`은 아래 등록 경로를 프록시하는 주소입니다. 기존 가계부와 같은 호스트를 쓴다면 기존 Caddy 사이트 블록에 `/broker/register/*`만 추가로 프록시하세요. `/kakao/skill/*` 연결은 유지합니다. 예시는 [deploy/Caddyfile.example](deploy/Caddyfile.example)에 있습니다. 키 등록 경로의 접근 로그도 기록하지 않습니다.
+암호화 키는 최초 한 번만 생성합니다. 기존 `master.key`가 있으면 이 단계는 건너뜁니다.
 
 ```bash
-docker compose --profile job build api telegram worker
-# 최초 한 번만 생성. 기존 master.key가 있으면 실행하지 않음.
 docker compose --profile job run --rm -v "$(pwd)/../stock-briefing-secrets:/key-write" worker \
   python -m app.cli create-master-key --file /key-write/master.key
+```
+
+텔레그램에서 봇에 `/start`를 보낸 뒤 사용자 ID를 아직 모른다면, 폴러를 시작하기 전에 아래 명령으로 확인하고 `.env`에 입력합니다.
+
+```bash
+docker compose run --rm telegram python -m app.cli inspect-telegram-id
+nano .env
+```
+
+환경변수 설정을 마친 뒤 서비스를 시작합니다.
+
+```bash
+docker compose up -d api telegram
+docker compose ps
+curl -fsS http://127.0.0.1:8000/healthz
+```
+
+키 파일은 DB와 분리해 보호·백업하고 Git에 올리지 않습니다. `.env`, DB·WAL 파일도 Git에 올리지 않습니다. 새 DB·백업 파일은 권한 600으로 생성합니다.
+
+### 1-3. 매일 08:30 정기 실행 등록
+
+아래 명령은 현재 설치 경로를 service에 반영합니다.
+
+```bash
+cd ~/source/stock-briefing
+sudo cp deploy/systemd/stock-briefing.service /etc/systemd/system/
+sudo cp deploy/systemd/stock-briefing.timer /etc/systemd/system/
+sudo sed -i "s|^WorkingDirectory=.*|WorkingDirectory=$(pwd)|" /etc/systemd/system/stock-briefing.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now stock-briefing.timer
+systemctl list-timers --all stock-briefing.timer
+```
+
+timer는 한국 시간 08:30에 worker를 실행합니다. 알림을 끄면 브리핑은 생성하고 정기 발송만 건너뜁니다. 종목·전략 등록은 아래 **첫 분석 설정**을 진행하세요.
+
+## 2. 초기 설정 완료 후 업데이트 (변경 배포 때마다)
+
+이미 `.env`, 암호화 키, 봇, timer를 설정한 서버에서는 아래 명령만 실행합니다. api·telegram뿐 아니라 정기 실행용 worker 이미지도 함께 갱신합니다.
+
+```bash
+cd ~/source/stock-briefing
+git pull --ff-only origin main
+export BUILD_TIME="$(TZ=Asia/Seoul date '+%Y-%m-%dT%H:%M:%S%:z')"
+export BUILD_COMMIT="$(git rev-parse HEAD)"
+docker compose --profile job build api telegram worker
 docker compose up -d api telegram
 ```
 
-키 파일은 별도의 보호된 폴더에 보관하며 DB와 함께 Git에 올리지 않습니다. 새 DB·백업 파일은 권한 600으로 생성합니다. 기존 DB·WAL 파일의 권한은 호스트에서 확인합니다. DB 구조는 추가 방식으로 초기화되어 기존 수신자·브리핑·발송 기록을 보존합니다.
+`BUILD_TIME`은 시간대가 포함된 ISO 형식으로 저장하며, 텔레그램에서는 한국 시간 `yyyy-mm-dd hh:mm:ss`로 표시합니다. `BUILD_COMMIT`은 현재 체크아웃한 커밋의 전체 ID입니다. 서버에서 새 코드를 적용하려면 위 이미지 빌드가 필요합니다.
 
-기존 timer/service의 명령은 동일한 `docker compose --profile job run --rm worker`이므로 timer를 다시 만들 필요 없습니다. worker의 내부 명령이 `run-daily`로 변경되었습니다. 알림을 끄면 브리핑은 생성하고 정기 발송만 건너뜁니다.
+업데이트할 때 기존 `.env`와 `master.key`를 유지하세요. `.env.example`에 새 변수가 추가된 경우에만 해당 항목을 기존 `.env`에 추가합니다. DB 구조는 추가 방식으로 초기화되어 기존 설정·관심종목·브리핑·발송 기록을 보존합니다. 일반 코드 업데이트에는 timer 재등록이 필요하지 않습니다.
+
+### 업데이트 확인
+
+```bash
+docker compose ps
+curl -fsS http://127.0.0.1:8000/healthz
+docker compose logs --tail=50 api telegram
+systemctl list-timers --all stock-briefing.timer
+git rev-parse HEAD
+```
+
+텔레그램에서 다음 명령을 하나씩 보냅니다.
+
+- `버전`: 빌드시간과 빌드번호를 확인합니다. 빌드번호가 서버의 `git rev-parse HEAD` 결과와 일치해야 합니다.
+- `서비스 상태`: 최근 브리핑과 자동 발송 상태를 확인합니다.
+- `오늘 브리핑`: 최신 데이터를 확인해 당일 브리핑을 생성합니다.
+- `로그 보기 10분`: 방금 실행한 기능의 처리·분석 로그를 확인합니다.
 
 ## 첫 분석 설정
 
@@ -85,6 +172,17 @@ docker compose --profile job run --rm worker
 
 업데이트 후 실행한 API·텔레그램·정기 worker의 브리핑, 전략 검증, 텔레그램 polling 진단을 공통 DB에 기록합니다. 기존 Docker 표준 출력 로그를 소급해서 읽지는 않습니다. HTTP 요청 URL이나 인증정보가 포함될 수 있는 외부 라이브러리 로그는 저장하지 않으며, 기존 허용 사용자·개인 대화 제한을 그대로 적용합니다. 로그는 7일 보관하고, 조회량이 많으면 최신 최대 200건·약 24,000자만 표시합니다. 더 좁은 시간으로 다시 조회할 수 있습니다. 텔레그램에서는 긴 응답을 여러 메시지로 나눠 전송합니다.
 
+기능별 진단 로그는 명령 처리·권한 거부·중복 처리, 설정 확인/적용,
+증권사 연결/인증, 일봉/수급/잔고 수집, 지표·점수 판단, 수량 산정,
+모의 성과 평가, 갱신 작업, 백업, 텔레그램 발송을 기록합니다.
+`Feature event`의 `trace`는 같은 작업에 속한 로그를 연결하며,
+`feature`/`status`는 실행 단계, `elapsed_ms`는 소요시간입니다.
+실패는 예외 종류를 기록하고, HTTP 응답은 상태코드·시도 횟수를 기록합니다.
+분석 로그에는 종목코드·기준일·지표·신호·가중치·매수/매도 기준 점수를 남깁니다.
+발송 생략, 입력 거부, 처리 중/캐시 응답은 별도 상태로 구분합니다.
+명령 원문, 확인 코드, 등록 링크, 인증키·토큰, 계좌번호, API 원문 응답은
+기능 로그에 기록하지 않습니다. 정상 상태의 빈 텔레그램 polling은 기록하지 않습니다.
+
 ## 운영·백업
 
 ```bash
@@ -107,15 +205,3 @@ python -m pytest -q
 ```
 
 Python 3.13에서 지표·수량·설정·증분 수집·휴장·데이터 누락·선택 계좌·모의 성과·등록 보안·동시 DB 접근·발송 중복과 결과 불명확 처리 등을 모의 데이터/HTTP로 검증합니다. 테스트는 실계좌와 실제 메시지를 호출하지 않습니다. API 이용 신청·실계좌 응답 검증과 서버 업데이트는 별도로 필요합니다. 초기 채널 설정은 [docs/bot-setup.md](docs/bot-setup.md)를 참고하세요.
-
-
-기능별 진단 로그는 명령 처리·권한 거부·중복 처리, 설정 확인/적용,
-증권사 연결/인증, 일봉/수급/잔고 수집, 지표·점수 판단, 수량 산정,
-모의 성과 평가, 갱신 작업, 백업, 텔레그램 발송을 기록합니다.
-`Feature event`의 `trace`는 같은 작업에 속한 로그를 연결하며,
-`feature`/`status`는 실행 단계, `elapsed_ms`는 소요시간입니다.
-실패는 예외 종류를 기록하고, HTTP 응답은 상태코드·시도 횟수를 기록합니다.
-분석 로그에는 종목코드·기준일·지표·신호·가중치·매수/매도 기준 점수를 남깁니다.
-발송 생략, 입력 거부, 처리 중/캐시 응답은 별도 상태로 구분합니다.
-명령 원문, 확인 코드, 등록 링크, 인증키·토큰, 계좌번호, API 원문 응답은
-기능 로그에 기록하지 않습니다. 정상 상태의 빈 텔레그램 polling은 기록하지 않습니다.
