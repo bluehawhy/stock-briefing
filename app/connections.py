@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -15,6 +17,7 @@ def digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+@traced("connections.registration_link")
 def registration_link(settings: Settings, store: Store) -> str:
     url = urlparse(settings.public_base_url)
     if (

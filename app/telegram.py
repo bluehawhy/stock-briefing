@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 import asyncio
 import logging
 from datetime import date, datetime
@@ -29,6 +31,8 @@ class TelegramAPI:
         except httpx.HTTPError:
             # httpx's default exception can include the token-bearing URL.
             raise RuntimeError(f"Telegram {method} transport error") from None
+        if method != "getUpdates" or response.status_code >= 400:
+            feature_event("telegram.http", "response", method=method, http_status=response.status_code)
         if response.status_code >= 400:
             raise RuntimeError(f"Telegram {method} HTTP {response.status_code}")
         result = response.json()
@@ -39,6 +43,7 @@ class TelegramAPI:
             )
         return result["result"]
 
+    @traced("telegram.send_text")
     async def send_text(self, chat_id: str, text: str) -> None:
         # Keep chunks under Telegram's 4096-character sendMessage limit.
         while text:
@@ -91,6 +96,7 @@ async def poll(settings: Settings, store: Store) -> None:
                 await asyncio.sleep(5)
 
 
+@traced("telegram.send_briefing")
 async def send_briefing(settings: Settings, store: Store) -> str:
     """Send today's saved briefing once; an ambiguous send requires manual review."""
     if len(settings.telegram_allowed_user_ids) != 1:
@@ -99,15 +105,19 @@ async def send_briefing(settings: Settings, store: Store) -> str:
         )
     day: date = datetime.now(KST).date()
     if not store.get("settings", "notifications", {"enabled": True})["enabled"]:
+        feature_event("telegram.delivery", "skipped", reason="scheduled notifications disabled")
         return "skipped: scheduled notifications disabled"
     record = store.briefing(day)
     if not record:
+        feature_event("telegram.delivery", "skipped", reason="no briefing saved for today")
         return "skipped: no briefing saved for today"
     user_id = next(iter(settings.telegram_allowed_user_ids))
     chat_id = store.telegram_chat(user_id)
     if not chat_id:
+        feature_event("telegram.delivery", "skipped", reason="authorized user has not started the bot")
         return "skipped: authorized user has not started the bot"
     if not store.reserve_delivery(day):
+        feature_event("telegram.delivery", "skipped", reason="delivery is already recorded or awaiting review")
         return "skipped: delivery is already recorded or awaiting review"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -124,6 +134,7 @@ async def send_briefing(settings: Settings, store: Store) -> str:
     return "sent"
 
 
+@traced("telegram.send_test")
 async def send_test(settings: Settings, store: Store) -> None:
     if len(settings.telegram_allowed_user_ids) != 1:
         raise ValueError("Configure exactly one TELEGRAM_ALLOWED_USER_IDS")

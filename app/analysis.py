@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_FLOOR
 from statistics import mean
@@ -7,6 +9,7 @@ from statistics import mean
 from app.models import Bar, DataError, Flow, Strategy
 
 
+@traced("analysis.indicators")
 def indicators(
     bars: list[Bar],
     flows: list[Flow],
@@ -68,9 +71,11 @@ def indicators(
             "institution_previous": sum(flows_by_day[b.day].institution for b in bars[-s.flow_window - 1 : -1]),
             "foreign_previous": sum(flows_by_day[b.day].foreign for b in bars[-s.flow_window - 1 : -1]),
         })
+    feature_event("analysis.indicators", "ready", basis_day=expected, include_flows=include_flows, **values)
     return values
 
 
+@traced("analysis.opinion")
 def opinion(i: dict, s: Strategy, *, include_flows: bool = True) -> tuple[str, int]:
     trend = (
         1 if i["short_ma"] > i["long_ma"] else -1 if i["short_ma"] < i["long_ma"] else 0
@@ -96,12 +101,16 @@ def opinion(i: dict, s: Strategy, *, include_flows: bool = True) -> tuple[str, i
             "foreign": (i["foreign"] > 0) - (i["foreign"] < 0),
         })
     score = sum(signal * s.weights[key] for key, signal in signals.items())
+    feature_event("analysis.opinion", "decision", signals=signals, weights=s.weights,
+                  score=score, buy_score=s.buy_score, sell_score=s.sell_score,
+                  include_flows=include_flows)
     return (
         "매수" if score >= s.buy_score else "매도" if score <= s.sell_score else "관망",
         score,
     )
 
 
+@traced("analysis.size")
 def size(
     action: str, price: int, held: int, budget: int, s: Strategy
 ) -> tuple[int, str]:
@@ -131,6 +140,7 @@ def size(
     return 0, "관망"
 
 
+@traced("analysis.paper_result")
 def paper_result(
     action: str, entry: int, exit_price: int, quantity: int, s: dict
 ) -> dict:

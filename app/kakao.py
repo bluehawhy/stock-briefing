@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 import asyncio
 
 from hmac import compare_digest
@@ -21,6 +23,7 @@ def skill_response(text: str) -> dict:
 
 
 @router.post("/kakao/skill/{secret}")
+@traced("kakao.kakao_skill")
 async def kakao_skill(secret: str, request: Request) -> dict:
     settings = Settings.from_env()
     if not settings.kakao_skill_secret or not compare_digest(

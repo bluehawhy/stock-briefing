@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 import asyncio
 import json
 from datetime import datetime, timezone
@@ -56,6 +58,7 @@ def form(token: str):
     )
 
 
+@traced("registration.save_connection")
 def save_connection(settings: Settings, store: Store, token: str, values: dict) -> str:
     # Keep credential replacement mutually exclusive with collection and other registrations.
     lease = store.acquire_lease("collection", 60)
@@ -139,6 +142,7 @@ def save_connection(settings: Settings, store: Store, token: str, values: dict) 
 
 
 @router.post("/broker/register/{token}")
+@traced("registration.submit")
 async def submit(token: str, request: Request):
     settings = Settings.from_env()
     store = Store(settings.db_path)

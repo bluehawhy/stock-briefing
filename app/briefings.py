@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -31,6 +33,7 @@ class BriefingEngine:
     def __init__(self, settings: Settings, store: Store, provider=None):
         self.settings, self.store, self.provider = settings, store, provider
 
+    @traced("briefings.generate")
     def generate(self, *, now: datetime | None = None) -> str:
         now = now or datetime.now(timezone.utc)
         if now.tzinfo is None:
@@ -97,6 +100,7 @@ class BriefingEngine:
                 provider.close()
             self.store.release_lease("collection", lease)
 
+    @traced("briefings._generate_watchlist")
     def _generate_watchlist(self, day: date, now: datetime) -> str:
         interests = dict(self.store.items("watchlist"))
         if not interests:
@@ -165,6 +169,7 @@ class BriefingEngine:
             + "\n\n".join(results)
         )
 
+    @traced("briefings._generate")
     def _generate(self, day: date, now: datetime, provider) -> str:
         yesterday = day - timedelta(days=1)
         start = yesterday - timedelta(days=400)
@@ -286,6 +291,7 @@ class BriefingEngine:
                     "strategy": strategy.dict(),
                     "at": now.isoformat(),
                 }
+                feature_event("holdings.opinion", "ready", symbol=symbol, basis_day=expected, action=action, score=score, quantity=quantity, reason=reason)
                 self.store.put("proposals", symbol, result)
                 # Preserve the first valid recommendation and its original cost/policy snapshot.
                 key = day.isoformat() + ":" + symbol
@@ -311,6 +317,7 @@ class BriefingEngine:
                         "at": now.isoformat(),
                     },
                 )
+                feature_event("holdings.opinion", "withheld", symbol=symbol, reason=reason)
                 results[symbol] = (
                     f"{info.get('name', symbol)} ({symbol})\n데이터 확인 필요: {reason}\n의견·수량 보류"
                 )
@@ -355,7 +362,9 @@ class BriefingEngine:
             + "\n\n".join(sections)
         )
 
+    @traced("briefings._collect")
     def _collect(self, provider, symbol, trading, expected, strategy):
+        feature_event("market.collection", "selected", symbol=symbol, basis_day=expected)
         bars = self.store.bars(symbol)
         cached = {b.day for b in bars}
         missing = [d for d in trading if d not in cached]
@@ -397,6 +406,7 @@ class BriefingEngine:
             f"직전 수급: 기관 {i['institution_previous']:+,}주 / 외국인 {i['foreign_previous']:+,}주"
         )
 
+    @traced("briefings.evaluate")
     def evaluate(self, trading: list[date], expected: date) -> None:
         for key, rec in self.store.items("recommendations"):
             if self.store.get("evaluations", key):

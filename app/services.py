@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -29,6 +31,7 @@ class BotService:
     def __init__(self, settings: Settings, store: Store):
         self.settings, self.store = settings, store
 
+    @traced("services.handle")
     def handle(self, message: InboundMessage) -> str | None:
         allowed = (
             self.settings.kakao_allowed_user_ids
@@ -42,6 +45,7 @@ class BotService:
             or message.user_id not in allowed
             or not message.is_private
         ):
+            feature_event("command.authorization", "rejected")
             return None
         if message.channel == "telegram" and message.chat_id:
             if message.chat_id != message.user_id:
@@ -56,9 +60,11 @@ class BotService:
         if key:
             cached = self.store.get("responses", key)
             if cached:
+                feature_event("command.deduplication", "cached")
                 return cached["text"]
             owner = self.store.acquire_lease("message:" + key, 30)
             if not owner:
+                feature_event("command.deduplication", "busy")
                 return "같은 메시지를 처리 중입니다. 잠시 후 상태를 조회하세요."
         try:
             try:
@@ -66,8 +72,10 @@ class BotService:
                 reply = navigator.route(message, self._command)
                 reply = navigator.paginate(message, reply)
             except DataError as exc:
+                feature_event("command.validation", "rejected", error_type=type(exc).__name__)
                 reply = str(exc)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as exc:
+                feature_event("command.validation", "rejected", error_type=type(exc).__name__)
                 reply = "입력값 또는 설정을 확인하세요. '도움말' 또는 '설정 도움말'을 입력하세요."
             if key:
                 self.store.put("responses", key, {"text": reply})
@@ -76,13 +84,21 @@ class BotService:
             if owner:
                 self.store.release_lease("message:" + key, owner)
 
+    @traced("services._proposal")
     def _proposal(self, message, action, payload, summary):
+        feature_event("settings.confirmation", "requested", action=action)
         code = self.store.confirm(message, action, payload)
         return f"{summary}\n적용하려면 5분 내 이 대화에서 '확인 {code}'를 입력하세요."
 
+    @traced("services._command")
     def _command(self, m: InboundMessage) -> str:
         command = m.text.strip()
         parts = command.split()
+        categories = {"관심종목", "보유종목", "보유량", "제안", "증권사", "추적",
+                      "설정", "알림", "주문", "확인", "브리핑", "오늘", "서비스",
+                      "연동", "도움말", "버전", "로그", "지금", "/start", "/help", "/version", "/status"}
+        feature_event("command.route", "selected",
+                      category=parts[0] if parts and parts[0] in categories else "other")
         today = datetime.now(KST).date()
         if command in {"/start", "/help", "도움말"}:
             return HELP
@@ -368,6 +384,7 @@ class BotService:
             "지원하지 않는 명령입니다. '도움말'을 입력해 사용 가능한 명령을 확인하세요."
         )
 
+    @traced("services._watchlist_change")
     def _watchlist_change(self, symbol, value):
         self.store.init()
         with self.store.connect() as db:
@@ -389,6 +406,7 @@ class BotService:
                 "DELETE FROM records WHERE kind='proposals' AND key=?", (symbol,)
             )
 
+    @traced("services._order_preview")
     def _order_preview(self, m, parts):
         if len(parts) != 7 or parts[3] not in {"매수", "매도"}:
             return "사용법: 주문 요청 계좌ID 매수|매도 종목코드 수량 지정가격"
@@ -405,6 +423,11 @@ class BotService:
         limits = self.store.get("settings", "order_limits")
         if not limits:
             return "주문 안전 한도를 먼저 설정하세요. 실제 주문 제출은 비활성입니다."
+        categories = {"관심종목", "보유종목", "보유량", "제안", "증권사", "추적",
+                      "설정", "알림", "주문", "확인", "브리핑", "오늘", "서비스",
+                      "연동", "도움말", "버전", "로그", "지금", "/start", "/help", "/version", "/status"}
+        feature_event("command.route", "selected",
+                      category=parts[0] if parts and parts[0] in categories else "other")
         today = datetime.now(KST).date().isoformat()
         if self.store.get("order_stop", today, {}).get("stopped"):
             return "당일 주문 중지 상태입니다."
@@ -425,7 +448,9 @@ class BotService:
             f"5분 내 같은 대화에서 '주문 확인 {code}': 비활성 상태를 확인하며 주문은 제출되지 않습니다."
         )
 
+    @traced("services._apply")
     def _apply(self, db, action, payload):
+        feature_event("settings.apply", "selected", action=action)
         if action == "order_disabled":
             return "실제 주문 제출이 비활성입니다. 주문 API를 호출하지 않았습니다."
         if action in {"strategy", "manual_holding", "tracking", "disconnect"}:

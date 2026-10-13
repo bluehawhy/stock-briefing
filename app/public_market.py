@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 from datetime import date, datetime
 from xml.etree import ElementTree
 
@@ -20,6 +22,7 @@ class PublicMarketProvider:
         if self.owns_client:
             self.client.close()
 
+    @traced("public_market.daily_bars")
     def daily_bars(self, symbol: str, end: date) -> list[Bar]:
         try:
             response = self.client.get(
@@ -29,6 +32,7 @@ class PublicMarketProvider:
                     "count": "600", "requestType": "0",
                 },
             )
+            feature_event("public_market.http", "response", http_status=response.status_code)
             response.raise_for_status()
             if len(response.content) > 2_000_000:
                 raise DataError("공개 일봉 응답 크기 초과")
@@ -57,6 +61,7 @@ class PublicMarketProvider:
             raise DataError("공개 일봉 응답 형식 오류") from None
 
 
+@traced("public_market.watch_opinion")
 def watch_opinion(bars: list[Bar], expected: date, strategy: Strategy, trading: list[date]):
     values = indicators(bars, [], expected, strategy, trading, include_flows=False)
     action, score = opinion(values, strategy, include_flows=False)

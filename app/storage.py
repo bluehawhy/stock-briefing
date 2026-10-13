@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 import sqlite3
 import json
 import secrets
@@ -149,6 +151,7 @@ class Store:
             db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
         return json.loads(row[0]) if row else None
 
+    @traced("storage.audit")
     def audit(self, action: str, detail: str) -> None:
         with self.connect() as db:
             db.execute(
@@ -205,6 +208,7 @@ class Store:
                 [(symbol, f.day.isoformat(), f.institution, f.foreign) for f in flows],
             )
 
+    @traced("storage.confirm")
     def confirm(self, message, action: str, payload: dict) -> str:
         self.init()
         code = secrets.token_hex(8)
@@ -224,6 +228,7 @@ class Store:
             )
         return code
 
+    @traced("storage.apply_confirmation")
     def apply_confirmation(self, message, code: str, apply):
         """Consume and apply a local mutation atomically, including channel/conversation checks."""
         self.init()
@@ -250,6 +255,7 @@ class Store:
             )
             return result
 
+    @traced("storage.enqueue_refresh")
     def enqueue_refresh(self) -> int:
         self.init()
         with self.connect() as db:
@@ -285,6 +291,7 @@ class Store:
                 return row[0]
         return None
 
+    @traced("storage.finish_job")
     def finish_job(self, job: int, status: str, detail: str) -> None:
         with self.connect() as db:
             db.execute(
@@ -326,6 +333,7 @@ class Store:
             )
         return cursor.rowcount == 1
 
+    @traced("storage.backup")
     def backup(self, destination: Path) -> None:
         destination = destination.resolve()
         if destination == self.path.resolve() or destination.exists():
@@ -407,6 +415,7 @@ class Store:
             ).fetchone()
             return (row[0], row[1]) if row else None
 
+    @traced("storage.reserve_delivery")
     def reserve_delivery(self, day: date) -> bool:
         self.init()
         with self.connect() as db:
@@ -418,6 +427,7 @@ class Store:
             )
             return cur.rowcount == 1
 
+    @traced("storage.finish_delivery")
     def finish_delivery(self, day: date, status: str, detail: str = "") -> None:
         with self.connect() as db:
             db.execute(

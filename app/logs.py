@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import logging
+import inspect
+import json
+from contextvars import ContextVar
+from functools import wraps
+from time import perf_counter
+from uuid import uuid4
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.models import DataError
@@ -19,7 +25,7 @@ SAFE_PREFIXES = {
         "Watchlist opinion withheld:", "Watchlist opinion ready:", "Refresh job failed",
     ),
     "app.telegram": ("Telegram poll failed",),
-    "app.logs": ("Application log capture started:",),
+    "app.logs": ("Application log capture started:", "Feature event:"),
 }
 
 
@@ -35,6 +41,9 @@ class StoredLogHandler(logging.Handler):
         try:
             at = datetime.fromtimestamp(record.created, timezone.utc)
             message = record.getMessage().replace("\r", " ").replace("\n", " ")[:2000]
+            trace = _TRACE.get()
+            if trace and not record.msg.startswith("Feature event:"):
+                message = f"trace={trace} {message}"
             with self.store.connect() as db:
                 db.execute(
                     "INSERT INTO application_logs(created_at,level,source,message) VALUES (?,?,?,?)",
@@ -111,3 +120,77 @@ def view_logs(store, argument="", *, now=None):
     if len(rows) > len(lines):
         suffix = "\n로그가 많아 최신 일부를 표시했습니다. 더 짧은 분 범위나 HH:mm으로 조회하세요."
     return header + "\n" + "\n".join(reversed(lines)) + suffix
+
+
+_TRACE = ContextVar("feature_log_trace", default=None)
+
+
+def feature_event(feature, status, **fields):
+    """Only callers' explicitly selected diagnostics belong here, never raw input."""
+    logging.getLogger("app.logs").info(
+        "Feature event: %s",
+        json.dumps({"trace": _TRACE.get(), "feature": feature, "status": status,
+                    **fields}, ensure_ascii=False, default=str),
+    )
+
+
+def traced(feature):
+    """Trace sync/async operations without recording arguments or exception text."""
+    def decorate(fn):
+        signature = inspect.signature(fn)
+
+        def begin(args, kwargs):
+            token = _TRACE.set(_TRACE.get() or uuid4().hex[:12])
+            started = perf_counter()
+            fields = {}
+            bound = signature.bind(*args, **kwargs)
+            for key in ("symbol", "start", "end", "expected"):
+                value = bound.arguments.get(key)
+                if key == "symbol" and isinstance(value, str) and re.fullmatch(r"[0-9]{6}", value):
+                    fields[key] = value
+                elif key != "symbol" and isinstance(value, (datetime, date)):
+                    fields[key] = value.isoformat()
+            feature_event(feature, "started", **fields)
+            return token, started
+
+        def finish(started, result):
+            fields = {"elapsed_ms": round((perf_counter() - started) * 1000, 1)}
+            if isinstance(result, (list, dict)):
+                fields["result_count"] = len(result)
+            elif isinstance(result, bool):
+                fields["accepted"] = result
+            feature_event(feature, "completed", **fields)
+
+        def failed(started, exc):
+            feature_event(feature, "failed", error_type=type(exc).__name__,
+                          elapsed_ms=round((perf_counter() - started) * 1000, 1))
+
+        if inspect.iscoroutinefunction(fn):
+            @wraps(fn)
+            async def wrapper(*args, **kwargs):
+                token, started = begin(args, kwargs)
+                try:
+                    result = await fn(*args, **kwargs)
+                    finish(started, result)
+                    return result
+                except BaseException as exc:
+                    failed(started, exc)
+                    raise
+                finally:
+                    _TRACE.reset(token)
+        else:
+            @wraps(fn)
+            def wrapper(*args, **kwargs):
+                token, started = begin(args, kwargs)
+                try:
+                    result = fn(*args, **kwargs)
+                    finish(started, result)
+                    return result
+                except BaseException as exc:
+                    failed(started, exc)
+                    raise
+                finally:
+                    _TRACE.reset(token)
+        wrapper.__signature__ = inspect.signature(fn, eval_str=True)
+        return wrapper
+    return decorate

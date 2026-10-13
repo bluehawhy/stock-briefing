@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.logs import traced, feature_event
+
 import json
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -103,6 +105,7 @@ class KisProvider:
             self._last_request = time.monotonic()
             try:
                 response = self.client.request(method, self.base + path, **kwargs)
+                feature_event("providers.http", "response", attempt=attempt + 1, http_status=response.status_code)
                 if response.status_code == 429 or response.status_code >= 500:
                     if attempt < 2:
                         time.sleep(0.5 * (attempt + 1))
@@ -119,12 +122,14 @@ class KisProvider:
                     raise DataError("한국투자 API 조회 실패 (권한·토큰·호출한도 확인)")
                 return result, response.headers
             except httpx.HTTPError:
+                feature_event("providers.http", "transport_error", attempt=attempt + 1)
                 if attempt == 2:
                     raise DataError("한국투자 API 네트워크 오류") from None
             except (ValueError, TypeError):
                 raise DataError("한국투자 API 응답 형식 오류") from None
         raise DataError("한국투자 API 재시도 한도 초과")
 
+    @traced("providers.authenticate")
     def authenticate(self) -> None:
         lease = self.store.acquire_lease("kis-auth", 60)
         if not lease:
@@ -210,6 +215,7 @@ class KisProvider:
         except (TypeError, ValueError):
             raise DataError("한국투자 거래일 형식 오류") from None
 
+    @traced("providers.calendar")
     def calendar(self, start: date, end: date) -> dict[date, bool]:
         if self.environment == "paper":
             raise DataError(
@@ -248,6 +254,7 @@ class KisProvider:
             raise DataError("거래소 일정 일부 누락")
         return days
 
+    @traced("providers.daily_bars")
     def daily_bars(self, symbol: str, start: date, end: date) -> list[Bar]:
         symbol_code(symbol)
         bars = {}
@@ -301,6 +308,7 @@ class KisProvider:
                 break
         return sorted(bars.values(), key=lambda b: b.day)
 
+    @traced("providers.investor_flows")
     def investor_flows(self, symbol: str, start: date, end: date) -> list[Flow]:
         # This endpoint supplies recent finalized flows, not a synthetic 52-week history.
         data, _ = self._get(
@@ -324,6 +332,7 @@ class KisProvider:
                 )
         return sorted(result, key=lambda f: f.day)
 
+    @traced("providers.holdings")
     def holdings(self, account: dict) -> dict[str, int]:
         cano, product = account["number"], account["product"]
         if (
