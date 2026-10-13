@@ -39,6 +39,7 @@ class BriefingEngine:
         lease = self.store.acquire_lease("collection", 7200)
         if not lease:
             raise DataError("데이터 갱신이 이미 진행 중입니다.")
+        LOG.info("Briefing started: day=%s", day)
         self.collection_owner = lease
         owned_provider = self.provider is None
         provider = self.provider
@@ -55,6 +56,7 @@ class BriefingEngine:
                         holdings_body = self._generate(day, now, provider)
                     except (DataError, KeyError, TypeError, ValueError) as exc:
                         reason = str(exc) if isinstance(exc, DataError) else "보유종목 데이터 오류"
+                        LOG.warning("Holdings briefing withheld: day=%s reason=%s", day, reason)
                         holdings_body = f"[보유종목]\n데이터 확인 필요: {reason}\n의견·수량 보류"
                         for symbol, _ in self.store.items("proposals"):
                             self.store.put("proposals", symbol, {
@@ -70,6 +72,7 @@ class BriefingEngine:
                     if isinstance(exc, DataError)
                     else "데이터 응답 필드 또는 설정 오류"
                 )
+                LOG.warning("Briefing withheld: day=%s reason=%s", day, reason)
                 body = f"발송일: {day}\n데이터 확인 필요: {reason}\n매매 의견·수량을 보류합니다."
                 status = "data_required"
                 for symbol, _ in self.store.items("proposals"):
@@ -87,6 +90,7 @@ class BriefingEngine:
             self.store.put(
                 "runs", day.isoformat(), {"status": status, "at": now.isoformat()}
             )
+            LOG.info("Briefing saved: day=%s status=%s", day, status)
             return body
         finally:
             if owned_provider and provider is not None:
@@ -97,6 +101,7 @@ class BriefingEngine:
         interests = dict(self.store.items("watchlist"))
         if not interests:
             return "[관심종목]\n등록된 종목이 없습니다."
+        LOG.info("Watchlist analysis started: day=%s count=%d", day, len(interests))
         public = PublicMarketProvider()
         results = []
         try:
@@ -112,6 +117,10 @@ class BriefingEngine:
             except (DataError, KeyError, ValueError, TypeError) as exc:
                 reason = str(exc) if isinstance(exc, DataError) else "공개 시장 데이터 오류"
                 for symbol, info in sorted(interests.items()):
+                    LOG.warning(
+                        "Watchlist opinion withheld: day=%s symbol=%s stage=setup reason=%s",
+                        day, symbol, reason,
+                    )
                     results.append(f"{info.get('name', symbol)} ({symbol})\n의견 보류: {reason}")
                     self.store.put("watch_proposals", symbol, {
                         "action": "데이터 확인 필요", "reason": reason,
@@ -131,11 +140,19 @@ class BriefingEngine:
                             "strategy": strategy.dict(), "at": now.isoformat(),
                             "source": "naver_public", "basis": "price_volume_only",
                         })
+                        LOG.info(
+                            "Watchlist opinion ready: symbol=%s basis_day=%s action=%s score=%s",
+                            symbol, expected, action, score,
+                        )
                         results.append(format_watch(
                             info.get("name", symbol), symbol, expected, values, action, strategy
                         ))
                     except (DataError, KeyError, ValueError, TypeError) as exc:
                         reason = str(exc) if isinstance(exc, DataError) else "공개 일봉 데이터 오류"
+                        LOG.warning(
+                            "Watchlist opinion withheld: day=%s symbol=%s stage=analysis reason=%s",
+                            day, symbol, reason,
+                        )
                         results.append(f"{info.get('name', symbol)} ({symbol})\n의견 보류: {reason}")
                         self.store.put("watch_proposals", symbol, {
                             "action": "데이터 확인 필요", "reason": reason,
