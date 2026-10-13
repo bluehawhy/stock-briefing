@@ -92,7 +92,7 @@ async def poll(settings: Settings, store: Store) -> None:
                     store.set_poll_offset(update_id + 1)
             except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
                 # httpx exceptions may include a URL with a bot token; log only the type.
-                LOG.warning("Telegram poll failed (%s); retrying", type(exc).__name__)
+                LOG.warning("Telegram poll failed (%s); retrying", type(exc).__name__, exc_info=True)
                 await asyncio.sleep(5)
 
 

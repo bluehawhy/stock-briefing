@@ -8,7 +8,7 @@ from app.registration import router as registration_router
 from app.briefings import process_jobs
 from app.config import Settings
 from app.storage import Store
-from app.logs import install_log_capture
+from app.logs import install_log_capture, log_python_exception
 
 
 @asynccontextmanager
@@ -16,11 +16,27 @@ async def lifespan(app):
     settings = Settings.from_env()
     store = Store(settings.db_path)
     install_log_capture(store)
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+
+    def handle_exception(loop, context):
+        exc = context.get("exception")
+        if isinstance(exc, Exception):
+            log_python_exception("asyncio", exc)
+        if previous_handler:
+            previous_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handle_exception)
     task = asyncio.create_task(process_jobs(settings, store))
-    yield
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    try:
+        yield
+    finally:
+        loop.set_exception_handler(previous_handler)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(title="stock-briefing messaging", lifespan=lifespan)

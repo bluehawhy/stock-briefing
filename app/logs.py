@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import sys
+import threading
+from pathlib import Path
 import inspect
 import json
 from contextvars import ContextVar
@@ -25,8 +28,40 @@ SAFE_PREFIXES = {
         "Watchlist opinion withheld:", "Watchlist opinion ready:", "Refresh job failed",
     ),
     "app.telegram": ("Telegram poll failed",),
-    "app.logs": ("Application log capture started:", "Feature event:"),
+    "app.logs": ("Application log capture started:", "Feature event:", "Python exception:"),
 }
+
+
+def safe_traceback(exc, seen=None):
+    """Keep stack locations, never exception text, source lines or local values."""
+    seen = set() if seen is None else seen
+    if id(exc) in seen:
+        return "[exception chain cycle]"
+    seen.add(id(exc))
+    lines = []
+    cause = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+    if cause is not None:
+        lines.append(safe_traceback(cause, seen))
+        lines.append("Caused by / during handling:")
+    lines.append("Traceback (most recent call last):")
+    frames = []
+    tb = exc.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        frames.append(f'  File "{Path(code.co_filename).name}", line {tb.tb_lineno}, in {code.co_name}')
+        tb = tb.tb_next
+    if len(frames) > 30:
+        lines.append("  [earlier frames omitted]")
+    lines.extend(frames[-30:])
+    lines.append(f"{type(exc).__name__}: [exception message omitted]")
+    return "\n".join(lines)[-12000:]
+
+
+def log_python_exception(source, exc):
+    logging.getLogger("app.logs").error(
+        "Python exception: source=%s error_type=%s", source, type(exc).__name__,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
 
 
 class StoredLogHandler(logging.Handler):
@@ -36,13 +71,20 @@ class StoredLogHandler(logging.Handler):
 
     def emit(self, record):
         prefixes = SAFE_PREFIXES.get(record.name, ())
-        if not isinstance(record.msg, str) or not record.msg.startswith(prefixes):
+        safe_message = isinstance(record.msg, str) and record.msg.startswith(prefixes)
+        if not safe_message and record.levelno < logging.ERROR:
             return
         try:
             at = datetime.fromtimestamp(record.created, timezone.utc)
-            message = record.getMessage().replace("\r", " ").replace("\n", " ")[:2000]
+            if safe_message:
+                message = record.getMessage().replace("\r", " ").replace("\n", " ")[:2000]
+            else:
+                message = (f"Python log: {Path(record.pathname).name}:{record.lineno} "
+                           f"in {record.funcName} [message omitted]")
+            if record.exc_info and record.exc_info[1] is not None:
+                message += "\n" + safe_traceback(record.exc_info[1])
             trace = _TRACE.get()
-            if trace and not record.msg.startswith("Feature event:"):
+            if trace and not (safe_message and record.msg.startswith("Feature event:")):
                 message = f"trace={trace} {message}"
             with self.store.connect() as db:
                 db.execute(
@@ -60,12 +102,27 @@ class StoredLogHandler(logging.Handler):
 
 def install_log_capture(store):
     store.init()
-    logger = logging.getLogger("app")
-    for handler in logger.handlers:
+    root = logging.getLogger()
+    for handler in root.handlers:
         if isinstance(handler, StoredLogHandler) and handler.store.path == store.path:
             return
-    logger.setLevel(logging.INFO)
-    logger.addHandler(StoredLogHandler(store))
+    logging.getLogger("app").setLevel(logging.INFO)
+    root.addHandler(StoredLogHandler(store))
+    # Uvicorn uses a non-propagating error logger.
+    logging.getLogger("uvicorn.error").addHandler(StoredLogHandler(store))
+    previous_sys = sys.excepthook
+    previous_thread = threading.excepthook
+
+    def unhandled(kind, exc, tb):
+        log_python_exception("sys.excepthook", exc)
+        previous_sys(kind, exc, tb)
+
+    def thread_unhandled(args):
+        log_python_exception("threading.excepthook", args.exc_value)
+        previous_thread(args)
+
+    sys.excepthook = unhandled
+    threading.excepthook = thread_unhandled
     logging.getLogger(__name__).info("Application log capture started: retention_days=7")
 
 
@@ -162,6 +219,8 @@ def traced(feature):
             feature_event(feature, "completed", **fields)
 
         def failed(started, exc):
+            if isinstance(exc, Exception):
+                log_python_exception(feature, exc)
             feature_event(feature, "failed", error_type=type(exc).__name__,
                           elapsed_ms=round((perf_counter() - started) * 1000, 1))
 
