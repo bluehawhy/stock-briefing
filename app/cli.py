@@ -13,6 +13,7 @@ from app.storage import Store
 from app.telegram import inspect_user_ids, poll, send_briefing, send_test
 from app.briefings import BriefingEngine
 from app.models import Strategy
+from app.logs import install_log_capture
 
 
 def main() -> None:
@@ -60,6 +61,7 @@ def main() -> None:
         print("created")
         return
     store.init()
+    install_log_capture(store)
     if args.command == "poll":
         asyncio.run(poll(settings, store))
     elif args.command == "send-briefing":

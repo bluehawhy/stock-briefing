@@ -8,12 +8,15 @@ from app.registration import router as registration_router
 from app.briefings import process_jobs
 from app.config import Settings
 from app.storage import Store
+from app.logs import install_log_capture
 
 
 @asynccontextmanager
 async def lifespan(app):
     settings = Settings.from_env()
-    task = asyncio.create_task(process_jobs(settings, Store(settings.db_path)))
+    store = Store(settings.db_path)
+    install_log_capture(store)
+    task = asyncio.create_task(process_jobs(settings, store))
     yield
     task.cancel()
     with suppress(asyncio.CancelledError):

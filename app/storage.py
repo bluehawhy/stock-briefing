@@ -89,6 +89,13 @@ class Store:
                 CREATE TABLE IF NOT EXISTS leases (
                     name TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS application_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL, level TEXT NOT NULL,
+                    source TEXT NOT NULL, message TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS application_logs_created_at
+                    ON application_logs(created_at);
                 CREATE TABLE IF NOT EXISTS audit (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL,
                     detail TEXT NOT NULL, created_at TEXT NOT NULL

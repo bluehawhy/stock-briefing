@@ -88,6 +88,11 @@ class BotService:
             return HELP
         if command in {"버전", "/version"}:
             return version_text()
+        if command in {"로그 보기", "지금 로그 보기"} or command.startswith(("로그 보기 ", "지금 로그 보기 ")):
+            from app.logs import view_logs
+
+            prefix = "지금 로그 보기" if command.startswith("지금 ") else "로그 보기"
+            return view_logs(self.store, command[len(prefix):])
         if command == "오늘 브리핑":
             from app.briefings import BriefingEngine
 
