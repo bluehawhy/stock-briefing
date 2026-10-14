@@ -24,7 +24,7 @@ class SymbolResolver:
     def catalog(self) -> dict[str, dict]:
         now = datetime.now(timezone.utc)
         cached = self.store.get("symbol_catalog", "domestic")
-        if cached and cached.get("expires_at", "") > now.isoformat():
+        if cached and cached.get("format_version") == 2 and cached.get("expires_at", "") > now.isoformat():
             return cached["symbols"]
         symbols = {}
         try:
@@ -47,9 +47,9 @@ class SymbolResolver:
                     for row in rows:
                         prefix = row[:-tail]
                         code, name = prefix[:9].strip(), prefix[21:].strip()
-                        # Existing bot supports six-digit domestic stock codes only.
-                        if len(code) == 6 and code.isascii() and code.isdigit() and name:
-                            market_symbols[code] = {"name": name, "market": market}
+                        # Domestic short codes may contain ASCII letters.
+                        if len(code) == 6 and code.isascii() and code.isalnum() and name:
+                            market_symbols[code.upper()] = {"name": name, "market": market}
                     if not market_symbols:
                         raise DataError("공개 종목 목록 형식 오류")
                     symbols.update(market_symbols)
@@ -57,7 +57,7 @@ class SymbolResolver:
             feature_event("symbols.public_catalog", "unavailable")
             raise DataError("공개 종목 목록 조회 실패: 잠시 후 다시 시도하거나 6자리 코드를 보내세요.") from None
         self.store.put("symbol_catalog", "domestic", {
-            "symbols": symbols, "updated_at": now.isoformat(),
+            "format_version": 2, "symbols": symbols, "updated_at": now.isoformat(),
             "expires_at": (now + timedelta(hours=24)).isoformat(),
         })
         feature_event("symbols.public_catalog", "ready", count=len(symbols))

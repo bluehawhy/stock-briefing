@@ -16,9 +16,9 @@ class DataError(ValueError):
 
 
 def symbol_code(value: str) -> str:
-    if len(value) != 6 or not value.isascii() or not value.isdigit():
-        raise DataError("종목코드는 숫자 6자리로 입력하세요.")
-    return value
+    if len(value) != 6 or not value.isascii() or not value.isalnum():
+        raise DataError("종목코드는 영문·숫자 6자리로 입력하세요.")
+    return value.upper()
 
 
 def number(value: object, *, negative: bool = False) -> int:

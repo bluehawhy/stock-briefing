@@ -77,6 +77,8 @@ HELP = (
     + "\n\n번호 또는 카테고리명을 보내세요.\n"
     "예: 브리핑 → 오늘 브리핑 / 브리핑 이력 / 제안 보기\n"
     "'오늘 브리핑'은 최신 데이터를 확인해 새 브리핑을 생성하고 결과를 바로 보여줍니다.\n"
+    "명령 단어 순서는 자유롭습니다: 브리핑 오늘 / 추가 관심종목 에스엔시스.\n"
+    "영문·숫자 6자리 종목코드도 지원합니다. 겹치는 명령은 선택 후 실행합니다.\n"
     "여러 명령은 쉼표·줄바꿈·그리고로 구분하며, 하나를 선택한 뒤 실행합니다.\n"
     "항목 선택 후에는 필요한 값만 보내세요. 명령어를 다시 입력할 필요가 없습니다.\n"
     "예: 관심종목 → 2 → 삼성전자 → 종목코드 자동 조회\n"
@@ -99,14 +101,14 @@ PARAMETER_PREFIXES = sorted(
     reverse=True,
 )
 ARGUMENT_COMMANDS = re.compile(
-    r"(?:보유량 설정\s+[0-9]{6}\s+[0-9]+"
-    r"|관심종목 (?:제거|삭제)\s+[0-9]{6}"
+    r"(?:보유량 설정\s+[A-Za-z0-9]{6}\s+[0-9]+"
+    r"|관심종목 (?:제거|삭제)\s+[A-Za-z0-9]{6}"
     r"|추적 계좌 (?:추가|제거)\s+\S+"
     r"|브리핑 이력\s+[0-9]{4}-[0-9]{2}-[0-9]{2}"
     r"|(?:지금 )?로그 보기\s+(?:[0-9]+\s*분|[0-9]{2}:[0-9]{2})"
-    r"|제안 보기\s+[0-9]{6}"
+    r"|제안 보기\s+[A-Za-z0-9]{6}"
     r"|(?:주문 확인|확인)\s+[0-9a-f]{16}"
-    r"|주문 요청\s+\S+\s+(?:매수|매도)\s+[0-9]{6}\s+[0-9]+\s+[0-9]+)(?=\s|$)"
+    r"|주문 요청\s+\S+\s+(?:매수|매도)\s+[A-Za-z0-9]{6}\s+[0-9]+\s+[0-9]+)(?=\s|$)"
 )
 
 
@@ -134,7 +136,7 @@ def split_commands(text: str) -> list[str]:
         elif char in "}]":
             depth = max(0, depth - 1)
         separator = (
-            re.match(r"\s+(?:그리고|및|하고|또는)\s+|\s+/\s+", text[i:])
+            re.match(r"\s+(?:그리고|및|하고|또는)\s+|\s+/+\s+", text[i:])
             if depth == 0
             else None
         )
@@ -188,22 +190,57 @@ def split_commands(text: str) -> list[str]:
     return list(partition(text) or (text,))
 
 
+def command_candidates(text: str) -> list[str]:
+    """Match command words in any order, keeping argument text intact."""
+    # JSON commands retain their exact prefix and payload parsing.
+    if "{" in text or "[" in text or text.startswith("/"):
+        return [text] if text in SIMPLE or any(
+            text.startswith(prefix + " ") for prefix in PARAMETER_PREFIXES
+        ) else []
+    words = re.findall(r"\S+", text)
+    hits = []
+    for command in sorted({item for menu in MENUS.values() for item in menu}
+                          | set(INPUT_PROMPTS) | {"확인", "지금 로그 보기", "관심종목 삭제"}):
+        required = command.split()
+        remaining = list(words)
+        for word in required:
+            if word not in remaining:
+                break
+            remaining.remove(word)
+        else:
+            hits.append(command)
+    # A longer command absorbs its own shorter prefix, not another action.
+    hits = [command for command in hits if not any(
+        set(command.split()) < set(other.split()) for other in hits
+    )]
+    matched_words = {word for command in hits for word in command.split()}
+    argument = " ".join(word for word in words if word not in matched_words)
+    candidates = []
+    for command in hits:
+        canonical = "관심종목 제거" if command == "관심종목 삭제" else command
+        if argument and canonical not in PARAMETER_PREFIXES:
+            continue
+        candidates.append(canonical + (" " + argument if argument else ""))
+    return list(dict.fromkeys(candidates))
+
+
 def stock_request(text: str):
-    """Accept both action-first and name-first watchlist requests."""
     match = re.fullmatch(r"관심종목\s+(추가|제거|삭제)\s+(.+)", text)
     if match:
         action, argument = match.groups()
     else:
-        match = re.fullmatch(r"관심종목\s+(.+?)\s+(추가|제거|삭제)", text)
-        if not match:
+        candidates = [candidate for candidate in command_candidates(text)
+                      if candidate.startswith(("관심종목 추가 ", "관심종목 제거 "))]
+        if len(candidates) != 1:
             return None
-        argument, action = match.groups()
+        _, action, argument = candidates[0].split(maxsplit=2)
     return "관심종목 " + ("제거" if action == "삭제" else action), argument.strip()
 
 
 def known_command(text: str) -> bool:
     return (
-        text in SIMPLE
+        bool(command_candidates(text))
+        or text in SIMPLE
         or any(text.startswith(prefix + " ") for prefix in PARAMETER_PREFIXES)
         or stock_request(text) is not None
     )
@@ -255,8 +292,11 @@ class CommandNavigator:
     def input_reply(self, message, pending, execute):
         text = message.text.strip()
         command = pending["command"]
+        if re.match(r"^[A-Za-z0-9]{6}(?:\s|$)", text):
+            code, *rest = text.split(maxsplit=1)
+            text = code.upper() + (" " + rest[0] if rest else "")
         if pending.get("name"):
-            if not re.fullmatch(r"[0-9]{6}", text):
+            if not re.fullmatch(r"[A-Za-z0-9]{6}", text):
                 return "6자리 종목코드만 보내세요. (취소 가능)"
             arguments = text + " " + pending["name"]
         elif pending.get("symbol"):
@@ -265,7 +305,7 @@ class CommandNavigator:
             arguments = pending["symbol"] + " " + text
         elif command in {"관심종목 추가", "관심종목 제거"}:
             arguments = text
-            if not re.match(r"^[0-9]{6}(?:\s|$)", text):
+            if not re.match(r"^[A-Za-z0-9]{6}(?:\s|$)", text):
                 if text.isdecimal():
                     return "종목코드는 6자리입니다. 다시 보내세요. (취소 가능)"
                 if len(text) > 40:
@@ -293,7 +333,7 @@ class CommandNavigator:
                     return f"'{text}'의 코드를 확인할 수 없습니다. 6자리 종목코드만 보내세요. (5분 내, 취소 가능)"
                 else:
                     return "제거할 종목을 찾을 수 없거나 이름이 중복됩니다. 6자리 코드만 보내세요."
-        elif command == "보유량 설정" and re.fullmatch(r"[0-9]{6}", text):
+        elif command == "보유량 설정" and re.fullmatch(r"[A-Za-z0-9]{6}", text):
             self.wait_for_input(message, command, symbol=text)
             return "보유 수량만 보내세요. (0 이상의 정수, 5분 내, 취소 가능)"
         else:
@@ -361,6 +401,11 @@ class CommandNavigator:
             return self.menu(
                 message, f"명령어가 {len(commands)}개 입니다. 선택해주세요.", commands
             )
+        candidates = command_candidates(text)
+        if len(candidates) > 1:
+            return self.menu(message, "명령어가 겹칩니다. 무엇을 실행할지 선택해주세요.", candidates)
+        if candidates:
+            text = candidates[0]
         request = stock_request(text)
         if request:
             command, argument = request
