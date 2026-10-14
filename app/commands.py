@@ -7,6 +7,7 @@ import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from app.models import DataError
 
 MENUS = {
     "브리핑": ("오늘 브리핑", "브리핑 이력", "제안 보기"),
@@ -78,8 +79,9 @@ HELP = (
     "'오늘 브리핑'은 최신 데이터를 확인해 새 브리핑을 생성하고 결과를 바로 보여줍니다.\n"
     "여러 명령은 쉼표·줄바꿈·그리고로 구분하며, 하나를 선택한 뒤 실행합니다.\n"
     "항목 선택 후에는 필요한 값만 보내세요. 명령어를 다시 입력할 필요가 없습니다.\n"
-    "예: 관심종목 → 2 → 삼성전자 → 안내에 따라 종목코드 입력\n"
+    "예: 관심종목 → 2 → 삼성전자 → 종목코드 자동 조회\n"
     "'관심종목 이노스페이스 추가'처럼 종목명을 먼저 보내도 됩니다.\n"
+    "종목코드는 API 연결 시 종목정보 확인, 미연결·실패 시 공식 공개 목록으로 조회합니다.\n"
     "로그 보기: 최근 3분 / 로그 보기 10분: 최근 10분 / 로그 보기 09:05: 오늘 그 1분 (한국 시간)\n"
     "메인: 처음 메뉴 / 취소: 선택·입력 종료\n"
     "설정·보유량·계좌 변경은 별도 확인 코드가 필요합니다.\n"
@@ -208,8 +210,9 @@ def known_command(text: str) -> bool:
 
 
 class CommandNavigator:
-    def __init__(self, store):
+    def __init__(self, store, symbol_resolver=None):
         self.store = store
+        self.symbol_resolver = symbol_resolver
 
     @staticmethod
     def key(message):
@@ -272,6 +275,15 @@ class CommandNavigator:
                 matches = [
                     code for code, value in names.items() if value["name"] == text
                 ]
+                if command.endswith("추가") and self.symbol_resolver:
+                    try:
+                        matches = self.symbol_resolver.resolve(text)
+                    except DataError as exc:
+                        self.wait_for_input(message, command, name=text)
+                        return f"{exc}\n6자리 종목코드만 보내세요. (5분 내, 취소 가능)"
+                    if len(matches) > 1:
+                        self.wait_for_input(message, command, name=text)
+                        return "같은 이름의 종목이 여러 개입니다: " + ", ".join(matches) + "\n6자리 종목코드만 보내세요. (5분 내, 취소 가능)"
                 if len(matches) == 1:
                     arguments = matches[0] + (
                         " " + text if command.endswith("추가") else ""

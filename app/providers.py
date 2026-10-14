@@ -208,6 +208,21 @@ class KisProvider:
             },
         )
 
+    @traced("providers.stock_info")
+    def stock_info(self, symbol: str) -> dict:
+        symbol = symbol_code(symbol)
+        result, _ = self._get(
+            "/uapi/domestic-stock/v1/quotations/search-stock-info", "CTPF1002R",
+            {"PRDT_TYPE_CD": "300", "PDNO": symbol},
+        )
+        output = result.get("output")
+        if not isinstance(output, dict):
+            raise DataError("한국투자 종목정보 응답 형식 오류")
+        name = output.get("prdt_abrv_name") or output.get("prdt_name")
+        if not isinstance(name, str) or not name.strip() or output.get("pdno") != symbol:
+            raise DataError("한국투자 종목정보 코드·종목명 확인 실패")
+        return {"symbol": symbol, "name": name.strip()}
+
     @staticmethod
     def _day(value: str) -> date:
         try:

@@ -13,6 +13,7 @@ from app.models import DataError, Strategy, number, symbol_code
 from app.storage import Store
 from app.commands import CommandNavigator, HELP
 from app.version import version_text
+from app.symbols import SymbolResolver
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -68,7 +69,7 @@ class BotService:
                 return "같은 메시지를 처리 중입니다. 잠시 후 상태를 조회하세요."
         try:
             try:
-                navigator = CommandNavigator(self.store)
+                navigator = CommandNavigator(self.store, SymbolResolver(self.settings, self.store))
                 reply = navigator.route(message, self._command)
                 reply = navigator.paginate(message, reply)
             except DataError as exc:
