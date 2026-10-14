@@ -11,7 +11,7 @@ from app.analysis import indicators, opinion, paper_result, size
 from app.config import Settings
 from app.models import DataError, Strategy
 from app.providers import KisProvider
-from app.public_market import PublicMarketProvider, watch_opinion, format_watch
+from app.public_market import PublicMarketProvider, watch_opinion, format_watch, WatchStrategy
 from app.storage import Store
 
 LOG = logging.getLogger(__name__)
@@ -110,7 +110,8 @@ class BriefingEngine:
         results = []
         try:
             try:
-                strategy = Strategy.parse(self.store.get("settings", "strategy") or {})
+                configured = self.store.get("settings", "strategy")
+                strategy = Strategy.parse(configured) if configured else WatchStrategy()
                 # Observed reference-stock sessions; never synthetic weekday calendars.
                 end = day - timedelta(days=1)
                 reference = public.daily_bars("005930", end)
