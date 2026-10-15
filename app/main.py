@@ -49,7 +49,7 @@ app.include_router(dashboard_router)
 @app.middleware("http")
 async def dashboard_headers(request, call_next):
     response = await call_next(request)
-    if request.url.path == "/dashboard" or request.url.path.startswith("/dashboard/"):
+    if request.url.path == "/stock-briefing" or request.url.path.startswith("/stock-briefing/"):
         response.headers.update(DASHBOARD_HEADERS)
     return response
 
