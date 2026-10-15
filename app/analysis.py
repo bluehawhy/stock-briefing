@@ -164,3 +164,49 @@ def paper_result(
         "hit": pnl > 0,
         "definition": "매수 왕복 가상손익 / 매도 후 재매수 가정 회피손익 (공매도 아님)",
     }
+
+
+@traced("analysis.kospi")
+def market_trend(bars: list[Bar], expected: date, trading: list[date]) -> dict:
+    """Observed market wave, not a fitted sine wave or a price forecast."""
+    bars = sorted((b for b in bars if b.day <= expected), key=lambda b: b.day)
+    if len(bars) < 63 or bars[-1].day != expected:
+        raise DataError("코스피 일봉 부족 또는 기준 거래일 불일치")
+    for bar in bars:
+        bar.validate()
+    days = [b.day for b in bars]
+    if len(set(days)) != len(days) or not set(d for d in trading if days[-63] <= d <= expected).issubset(days):
+        raise DataError("코스피 거래일 누락 또는 중복")
+    fast = []
+    for end in range(len(bars) - 5, len(bars) + 1):
+        window = bars[end - 14:end]
+        low, high = min(b.low for b in window), max(b.high for b in window)
+        fast.append(50.0 if high == low else 100 * (window[-1].close - low) / (high - low))
+    k, previous_k = mean(fast[-3:]), mean(fast[-4:-1])
+    d = mean(mean(fast[n:n + 3]) for n in range(1, 4))
+    ma20, ma60 = mean(b.close for b in bars[-20:]), mean(b.close for b in bars[-60:])
+    previous20 = mean(b.close for b in bars[-21:-1])
+    trend = 1 if bars[-1].close > ma20 > ma60 and ma20 > previous20 else -1 if bars[-1].close < ma20 < ma60 and ma20 < previous20 else 0
+    wave = 1 if k > d and k > previous_k else -1 if k < d and k < previous_k else 0
+    signal = max(-1, min(1, trend + wave))
+    phase = "반등" if wave > 0 and trend <= 0 else "하락 전환" if wave < 0 and trend >= 0 else "상승" if signal > 0 else "하락" if signal < 0 else "횡보·혼조"
+    return {"day": expected.isoformat(), "close": bars[-1].close / 100,
+            "ma20": ma20 / 100, "ma60": ma60 / 100,
+            "k": k, "d": d, "phase": phase, "signal": signal}
+
+
+def apply_market(values: dict, action: str, score: int, strategy, market: dict) -> tuple[str, int]:
+    values["market"] = market
+    adjusted = score + market["signal"]
+    result = "매수" if adjusted >= strategy.buy_score else "매도" if adjusted <= strategy.sell_score else "관망"
+    if action == "의견 보류":
+        result = action
+    feature_event("analysis.market_adjustment", "decision", stock_score=score,
+                  market=market, score=adjusted, action=result)
+    return result, adjusted
+
+
+def format_market(market: dict) -> str:
+    return (f"• 코스피: {market['close']:,.2f} / {market['phase']} / 점수 {market['signal']:+d}\n"
+            f"  20일선 {market['ma20']:,.2f} / 60일선 {market['ma60']:,.2f} / "
+            f"스토캐스틱 K {market['k']:.1f}, D {market['d']:.1f}")

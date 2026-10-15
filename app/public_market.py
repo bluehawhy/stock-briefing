@@ -5,6 +5,7 @@ from app.logs import traced, feature_event
 from datetime import date, datetime, timedelta
 from dataclasses import asdict, dataclass
 from statistics import mean, pstdev
+from decimal import Decimal
 from xml.etree import ElementTree
 
 import httpx
@@ -23,13 +24,20 @@ class PublicMarketProvider:
         if self.owns_client:
             self.client.close()
 
-    @traced("public_market.daily_bars")
     def daily_bars(self, symbol: str, end: date) -> list[Bar]:
+        return self._daily_bars(symbol_code(symbol), end)
+
+    def kospi_bars(self, end: date) -> list[Bar]:
+        # Preserve index decimals as integer hundredths for Bar validation.
+        return self._daily_bars("KOSPI", end, index=True)
+
+    @traced("public_market.daily_bars")
+    def _daily_bars(self, symbol: str, end: date, *, index: bool = False) -> list[Bar]:
         try:
             response = self.client.get(
                 "https://fchart.stock.naver.com/sise.nhn",
                 params={
-                    "symbol": symbol_code(symbol), "timeframe": "day",
+                    "symbol": symbol, "timeframe": "day",
                     "count": "600", "requestType": "0",
                 },
             )
@@ -46,7 +54,8 @@ class PublicMarketProvider:
                 day = datetime.strptime(fields[0], "%Y%m%d").date()
                 if day > end:
                     continue
-                bar = Bar(day, *(number(value) for value in fields[1:]))
+                prices = [number(Decimal(value) * 100) if index else number(value) for value in fields[1:5]]
+                bar = Bar(day, *prices, number(fields[5]))
                 bar.validate()
                 if day in bars and bars[day] != bar:
                     raise ValueError
@@ -153,6 +162,8 @@ def format_watch(name: str, symbol: str, day: date, values: dict, action: str, s
     close = values["close"]
     lines = [f"{name} ({symbol})", f"기준: {day} 종가 (공개 일봉)", "",
              "의견: " + {"매수": "매수 검토", "매도": "매도 검토"}.get(action, action)]
+    from app.analysis import format_market
+    lines.append(format_market(values["market"]))
     price = f"• 가격: {close:,}원"
     if "daily_return" in values:
         price += f" / 전일 대비 {values['daily_return']:+.1%}"

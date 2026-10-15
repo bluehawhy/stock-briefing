@@ -7,7 +7,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from app.analysis import indicators, opinion, paper_result, size
+from app.analysis import indicators, opinion, paper_result, size, market_trend, apply_market, format_market
 from app.config import Settings
 from app.models import DataError, Strategy
 from app.providers import KisProvider
@@ -119,6 +119,7 @@ class BriefingEngine:
                 if (end - expected).days > 14:
                     raise DataError("공개 일봉 기준일이 오래되었습니다.")
                 trading = [bar.day for bar in reference]
+                market = market_trend(public.kospi_bars(end), expected, trading)
             except (DataError, KeyError, ValueError, TypeError) as exc:
                 reason = str(exc) if isinstance(exc, DataError) else "공개 시장 데이터 오류"
                 for symbol, info in sorted(interests.items()):
@@ -138,12 +139,13 @@ class BriefingEngine:
                     try:
                         bars = reference if symbol == "005930" else public.daily_bars(symbol, end)
                         values, action, score = watch_opinion(bars, expected, strategy, trading)
+                        action, score = apply_market(values, action, score, strategy, market)
                         self.store.put("watch_proposals", symbol, {
                             "symbol": symbol, "name": info.get("name", symbol),
                             "day": expected.isoformat(), "action": action,
                             "indicators": values, "score": score,
                             "strategy": strategy.dict(), "at": now.isoformat(),
-                            "source": "naver_public", "basis": "price_volume_only",
+                            "source": "naver_public", "basis": "price_volume_kospi",
                         })
                         LOG.info(
                             "Watchlist opinion ready: symbol=%s basis_day=%s action=%s score=%s",
@@ -166,7 +168,7 @@ class BriefingEngine:
         finally:
             public.close()
         return (
-            "[관심종목]\n공개 일봉 기준 · 가격/거래량 추세만 반영 (기관·외국인 수급 제외)\n\n"
+            "[관심종목]\n공개 일봉 기준 · 가격/거래량·코스피 추세 반영 (기관·외국인 수급 제외)\n\n"
             + "\n\n".join(results)
         )
 
@@ -233,6 +235,11 @@ class BriefingEngine:
             )
         if not watch:
             return f"기준 거래일: {expected}\n관심종목·추적 계좌 보유종목이 없습니다. '관심종목 추가 005930 삼성전자'로 등록하세요."
+        public = PublicMarketProvider()
+        try:
+            market = market_trend(public.kospi_bars(yesterday), expected, trading)
+        finally:
+            public.close()
         budget = strategy.buy_budget
         results = {}
         complete = 0
@@ -266,6 +273,7 @@ class BriefingEngine:
                         )
                     held = manual["quantity"]
                 action, score = opinion(values, strategy)
+                action, score = apply_market(values, action, score, strategy, market)
                 quantity, reason = size(action, values["close"], held, budget, strategy)
                 if action == "매수":
                     from decimal import Decimal, ROUND_CEILING
@@ -400,6 +408,7 @@ class BriefingEngine:
         i = r["indicators"]
         return (
             f"{r['name']} ({r['symbol']})\n의견: {r['action']} / 제안 {r['quantity']}주 / 보유 {r['held']}주\n"
+            f"{format_market(i['market'])}\n"
             f"종가 {i['close']:,}원 / 점수 {r['score']} / {r['reason']}\n"
             f"이평 {i['short_ma']:,.1f}/{i['long_ma']:,.1f}, 교차 {i['cross']}\n"
             f"52주 {i['low_52w']:,}~{i['high_52w']:,}원, 위치 {i['range_position']:.1%}, 전일 변화 {i['range_change']:+.1%}\n"
