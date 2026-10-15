@@ -14,12 +14,14 @@ services:
   api:
     build: *build
     env_file: .env
+    environment:
+      DASHBOARD_ALLOW_HTTP_PRIVATE: ${DASHBOARD_ALLOW_HTTP_PRIVATE:-1}
     volumes:
       - ./:/data
       - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}:/run/stock-briefing-secrets:ro
     logging: *logging
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8001:8000"
     restart: unless-stopped
   telegram:
     build: *build
