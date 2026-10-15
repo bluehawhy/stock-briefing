@@ -5,6 +5,6 @@ briefing.example.com {
 }
 
 # If sharing the household-ledger host, add only these routes to its existing block:
-# @stock_briefing path /kakao/skill/* /broker/register/* /dashboard /dashboard/*
+# @stock_briefing path /kakao/skill/* /broker/register/* /stock-briefing /stock-briefing/*
 # reverse_proxy @stock_briefing 127.0.0.1:8000
 # Keep the existing household-ledger routes and disable/redact logs for these paths.
