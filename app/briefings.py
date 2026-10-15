@@ -13,6 +13,7 @@ from app.models import DataError, Strategy
 from app.providers import KisProvider
 from app.public_market import PublicMarketProvider, watch_opinion, format_watch, WatchStrategy
 from app.storage import Store
+from app.highlights import watch_highlights
 
 LOG = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -108,6 +109,7 @@ class BriefingEngine:
         LOG.info("Watchlist analysis started: day=%s count=%d", day, len(interests))
         public = PublicMarketProvider()
         results = []
+        highlights = []
         try:
             try:
                 configured = self.store.get("settings", "strategy")
@@ -123,6 +125,8 @@ class BriefingEngine:
             except (DataError, KeyError, ValueError, TypeError) as exc:
                 reason = str(exc) if isinstance(exc, DataError) else "공개 시장 데이터 오류"
                 for symbol, info in sorted(interests.items()):
+                    highlights.append({"symbol": symbol, "name": info.get("name", symbol),
+                                       "action": "의견 보류"})
                     LOG.warning(
                         "Watchlist opinion withheld: day=%s symbol=%s stage=setup reason=%s",
                         day, symbol, reason,
@@ -154,7 +158,11 @@ class BriefingEngine:
                         results.append(format_watch(
                             info.get("name", symbol), symbol, expected, values, action, strategy
                         ))
+                        highlights.append({"symbol": symbol, "name": info.get("name", symbol),
+                                           "action": action, "indicators": values})
                     except (DataError, KeyError, ValueError, TypeError) as exc:
+                        highlights.append({"symbol": symbol, "name": info.get("name", symbol),
+                                           "action": "의견 보류"})
                         reason = str(exc) if isinstance(exc, DataError) else "공개 일봉 데이터 오류"
                         LOG.warning(
                             "Watchlist opinion withheld: day=%s symbol=%s stage=analysis reason=%s",
@@ -169,6 +177,7 @@ class BriefingEngine:
             public.close()
         return (
             "[관심종목]\n공개 일봉 기준 · 가격/거래량·코스피 추세 반영 (기관·외국인 수급 제외)\n\n"
+            + watch_highlights(highlights) + "\n\n"
             + "\n\n".join(results)
         )
 
