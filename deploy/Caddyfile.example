@@ -1,10 +1,20 @@
 briefing.example.com {
     # Replace the hostname and configure DNS/TLS before using the Kakao skill URL.
     # Keep access logging disabled: skill and one-time registration URLs carry secrets.
-    reverse_proxy 127.0.0.1:8000
+    reverse_proxy 127.0.0.1:8001
 }
 
 # If sharing the household-ledger host, add only these routes to its existing block:
 # @stock_briefing path /kakao/skill/* /broker/register/* /stock-briefing /stock-briefing/*
-# reverse_proxy @stock_briefing 127.0.0.1:8000
+# reverse_proxy @stock_briefing 127.0.0.1:8001
 # Keep the existing household-ledger routes and disable/redact logs for these paths.
+
+# Dedicated plain-HTTP listener for WireGuard clients. Restrict inbound TCP/8081
+# to the WireGuard interface/peer subnet in the host firewall.
+:8081 {
+    @stock_briefing path /stock-briefing /stock-briefing/*
+    handle @stock_briefing {
+        reverse_proxy 127.0.0.1:8001
+    }
+    respond 404
+}
