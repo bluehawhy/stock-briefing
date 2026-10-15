@@ -9,7 +9,7 @@ def test_dashboard_wireguard_listener_and_private_http_default():
     caddy = (ROOT / "deploy" / "Caddyfile.example").read_text()
     env_example = (ROOT / ".env.example").read_text()
 
-    assert 'DASHBOARD_ALLOW_HTTP_PRIVATE: ${DASHBOARD_ALLOW_HTTP_PRIVATE:-1}' in compose
+    assert 'DASHBOARD_ALLOW_HTTP_PRIVATE: "1"' in compose
     assert '"127.0.0.1:8001:8000"' in compose
     assert "DASHBOARD_ALLOW_HTTP_PRIVATE=1" in env_example
     assert ":8081 {" in caddy
