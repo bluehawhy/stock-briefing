@@ -1,5 +1,6 @@
 """Private, same-origin web dashboard backed by the existing SQLite store."""
 from datetime import date
+import ipaddress
 from hmac import compare_digest
 from pathlib import Path
 import os
@@ -24,12 +25,24 @@ HEADERS = {
 }
 
 
+def _transport_allowed(request: Request) -> bool:
+    if request.url.scheme == 'https' or request.url.hostname in {'localhost', '127.0.0.1', '::1'}:
+        return True
+    if os.getenv('DASHBOARD_ALLOW_HTTP_PRIVATE') != '1':
+        return False
+    try:
+        address = ipaddress.ip_address(request.url.hostname or '')
+    except ValueError:
+        return False
+    return address.is_private and not address.is_loopback
+
+
 def authorize(request: Request, response: Response,
               credentials: HTTPBasicCredentials | None = Depends(security)):
     password = os.getenv('DASHBOARD_PASSWORD', '')
     if len(password) < 24:
         raise HTTPException(404)
-    if request.url.scheme != 'https' and request.url.hostname not in {'localhost', '127.0.0.1', '::1'}:
+    if not _transport_allowed(request):
         raise HTTPException(403, 'HTTPS 연결이 필요합니다.')
     valid_user = compare_digest((credentials.username if credentials else '').encode(),
                                 os.getenv('DASHBOARD_USERNAME', 'admin').encode())
@@ -45,7 +58,7 @@ def authorize(request: Request, response: Response,
     return store
 
 
-router = APIRouter(prefix='/dashboard', dependencies=[Depends(authorize)])
+router = APIRouter(prefix='/stock-briefing', dependencies=[Depends(authorize)])
 
 
 @router.get('', include_in_schema=False)
