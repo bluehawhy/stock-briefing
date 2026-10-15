@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from app.kakao import router
 from app.registration import router as registration_router
+from app.dashboard import router as dashboard_router, HEADERS as DASHBOARD_HEADERS
 from app.briefings import process_jobs
 from app.config import Settings
 from app.storage import Store
@@ -42,6 +43,15 @@ async def lifespan(app):
 app = FastAPI(title="stock-briefing messaging", lifespan=lifespan)
 app.include_router(router)
 app.include_router(registration_router)
+app.include_router(dashboard_router)
+
+
+@app.middleware("http")
+async def dashboard_headers(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/dashboard" or request.url.path.startswith("/dashboard/"):
+        response.headers.update(DASHBOARD_HEADERS)
+    return response
 
 
 @app.get("/healthz")
