@@ -215,6 +215,28 @@ class BotService:
                 f"수동 보유량: {symbol} → {quantity}주",
             )
         if parts[:2] == ["제안", "보기"] and len(parts) in {2, 3}:
+            if len(parts) == 3:
+                symbol = symbol_code(parts[2])
+                from app.briefings import BriefingEngine
+                from app.public_market import format_watch
+                from types import SimpleNamespace
+
+                sections = []
+                for kind, title in (("proposals", "보유종목 제안"),
+                                    ("watch_proposals", "관심종목 의견")):
+                    record = self.store.get(kind, symbol)
+                    if not record:
+                        continue
+                    if "indicators" not in record:
+                        body = f"의견 보류: {record.get('reason', '데이터 확인 필요')}"
+                    elif kind == "proposals":
+                        body = BriefingEngine._format(record)
+                    else:
+                        body = format_watch(record["name"], symbol, date.fromisoformat(record["day"]),
+                                            record["indicators"], record["action"],
+                                            SimpleNamespace(**record["strategy"]))
+                    sections.append(f"[{title}]\n{body}\n생성 {record.get('at', '확인 불가')}")
+                return "\n\n".join(sections) or "저장된 제안이 없습니다. '오늘 브리핑'을 실행한 뒤 다시 선택하세요."
             records = (
                 self.store.items("proposals")
                 if len(parts) == 2

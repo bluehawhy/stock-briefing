@@ -10,7 +10,7 @@ from functools import lru_cache
 from app.models import DataError
 
 MENUS = {
-    "브리핑": ("오늘 브리핑", "브리핑 이력", "제안 보기"),
+    "브리핑": ("오늘 브리핑", "브리핑 이력", "제안 보기", "종목별 제안 선택"),
     "관심종목": ("관심종목 보기", "관심종목 추가", "관심종목 제거"),
     "보유량": ("보유종목", "보유량 설정"),
     "계좌": ("추적 계좌 보기", "추적 계좌 추가", "추적 계좌 제거"),
@@ -32,6 +32,8 @@ MENUS = {
     ),
     "상태": ("서비스 상태", "연동 상태", "버전", "로그 보기"),
     "모의 운용": ("모의 운용 기록",),
+    "빠른 메뉴": ("오늘 브리핑", "관심종목 보기", "보유종목", "종목별 제안 선택",
+                  "서비스 상태", "연동 상태", "버전"),
 }
 ALIASES = {
     "추적 계좌": "계좌",
@@ -42,6 +44,8 @@ ALIASES = {
     "/start": "메인",
     "/help": "메인",
     "/briefing": "브리핑",
+    "바로가기": "빠른 메뉴",
+    "/quick": "빠른 메뉴",
 }
 USAGES = {
     "로그 보기": "로그 보기 / 로그 보기 10분 / 로그 보기 09:05",
@@ -86,6 +90,7 @@ HELP = (
     "종목코드는 API 연결 시 종목정보 확인, 미연결·실패 시 공식 공개 목록으로 조회합니다.\n"
     "로그 보기: 최근 3분 / 로그 보기 10분: 최근 10분 / 로그 보기 09:05: 오늘 그 1분 (한국 시간)\n"
     "메인: 처음 메뉴 / 취소: 선택·입력 종료\n"
+    "빠른 메뉴 또는 바로가기: 자주 쓰는 조회 기능 / 종목별 제안 선택: 종목을 번호로 선택\n"
     "설정·보유량·계좌 변경은 별도 확인 코드가 필요합니다.\n"
     "API 비밀 키는 대화에 보내지 마세요."
 )
@@ -258,7 +263,7 @@ class CommandNavigator:
             f"{message.channel}:{message.user_id}:{message.chat_id or message.user_id}"
         )
 
-    def menu(self, message, title, options):
+    def menu(self, message, title, options, *, labels=None):
         self.store.put(
             "command_choices",
             self.key(message),
@@ -272,7 +277,8 @@ class CommandNavigator:
         return (
             title
             + "\n"
-            + "\n".join(f"{i}. {option}" for i, option in enumerate(options, 1))
+            + "\n".join(f"{i}. {option}" for i, option in enumerate(
+                labels if labels is not None else options, 1))
             + "\n번호 또는 항목명을 보내세요. (5분 내, 취소 가능)"
         )
 
@@ -406,6 +412,23 @@ class CommandNavigator:
             return self.menu(message, "명령어가 겹칩니다. 무엇을 실행할지 선택해주세요.", candidates)
         if candidates:
             text = candidates[0]
+        if text == "종목별 제안 선택":
+            names = dict(self.store.items("symbol_names"))
+            names.update(dict(self.store.items("watchlist")))
+            proposals = dict(self.store.items("proposals"))
+            watch_proposals = dict(self.store.items("watch_proposals"))
+            symbols = sorted(set(dict(self.store.items("watchlist")))
+                             | set(proposals) | set(watch_proposals)
+                             | {symbol for symbol, holding in self.store.items("manual_holdings")
+                                if holding.get("quantity", 0) > 0})
+            if not symbols:
+                return "선택할 종목이 없습니다. '관심종목 추가'로 종목을 등록한 뒤 '오늘 브리핑'을 실행하세요."
+            labels = []
+            for symbol in symbols:
+                info = names.get(symbol) or proposals.get(symbol) or watch_proposals.get(symbol) or {}
+                labels.append(f"{info.get('name', symbol)} ({symbol}) — 제안 보기")
+            return self.menu(message, "[종목별 제안 선택] 조회할 종목을 선택해주세요.",
+                             [f"제안 보기 {symbol}" for symbol in symbols], labels=labels)
         request = stock_request(text)
         if request:
             command, argument = request
