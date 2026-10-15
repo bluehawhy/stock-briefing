@@ -5,7 +5,7 @@ let overview = null, historyCursor = null, historyLoaded = false, selectedDay = 
 let historyRequest = 0, pollCount = 0;
 function notice(message) { $('notice').textContent = message; }
 async function api(path, options = {}) {
-  const response = await fetch('/dashboard/api' + path, {
+  const response = await fetch('/stock-briefing/api' + path, {
     ...options, credentials: 'same-origin', cache: 'no-store',
     headers: {'X-Dashboard-Request': '1', ...(options.body ? {'Content-Type': 'application/json'} : {})},
     signal: AbortSignal.timeout(45000)
