@@ -85,6 +85,13 @@ class BotService:
             if owner:
                 self.store.release_lease("message:" + key, owner)
 
+    def _briefing_menu(self, message, view, body):
+        from app.briefing_views import options
+
+        commands, labels = options(view)
+        CommandNavigator(self.store).menu(message, "", commands, labels=labels)
+        return body
+
     @traced("services._proposal")
     def _proposal(self, message, action, payload, summary):
         feature_event("settings.confirmation", "requested", action=action)
@@ -114,7 +121,23 @@ class BotService:
             from app.briefings import BriefingEngine
 
             body = BriefingEngine(self.settings, self.store).generate()
+            if m.channel == "telegram":
+                from app.briefing_views import daily_view, summary
+
+                view = daily_view(self.store, today)
+                if view and view["body"] == body:
+                    return self._briefing_menu(m, view, summary(view))
             return f"[새로 생성한 브리핑: {today}]\n{body}"
+        if command.startswith("브리핑 분류 "):
+            from app.briefing_views import ACTIONS, details
+
+            values = command.split(maxsplit=3)
+            if len(values) != 4 or values[3] not in (*ACTIONS, "전체"):
+                raise DataError("브리핑 분류를 확인하세요.")
+            view = self.store.get("briefing_views", values[2])
+            if not view:
+                return "해당 브리핑이 없습니다. 오늘 브리핑을 다시 선택하세요."
+            return self._briefing_menu(m, view, details(view, values[3]))
         if command == "브리핑 이력":
             self.store.init()
             with self.store.connect() as db:

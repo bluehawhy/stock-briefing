@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from uuid import uuid4
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -36,6 +37,7 @@ MENUS = {
                   "서비스 상태", "연동 상태", "버전"),
 }
 ALIASES = {
+    "관리": "상태",
     "추적 계좌": "계좌",
     "보유": "보유량",
     "도움말": "메인",
@@ -76,11 +78,12 @@ INPUT_PROMPTS = {
 }
 
 HELP = (
-    "메인 카테고리를 선택해주세요.\n"
+    "메인 카테고리를 선택해주세요. (텔레그램은 버튼 터치 가능)\n"
     + "\n".join(f"{i}. {name}" for i, name in enumerate(MENUS, 1))
     + "\n\n번호 또는 카테고리명을 보내세요.\n"
     "예: 브리핑 → 오늘 브리핑 / 브리핑 이력 / 제안 보기\n"
-    "'오늘 브리핑'은 최신 데이터를 확인해 새 브리핑을 생성하고 결과를 바로 보여줍니다.\n"
+    "'오늘 브리핑'은 최신 데이터를 확인해 새 브리핑을 생성합니다.\n"
+    "텔레그램에서는 매수·매도·관망 개수 버튼으로 해당 종목 전체 내용을 볼 수 있습니다.\n"
     "명령 단어 순서는 자유롭습니다: 브리핑 오늘 / 추가 관심종목 에스엔시스.\n"
     "영문·숫자 6자리 종목코드도 지원합니다. 겹치는 명령은 선택 후 실행합니다.\n"
     "여러 명령은 쉼표·줄바꿈·그리고로 구분하며, 하나를 선택한 뒤 실행합니다.\n"
@@ -101,7 +104,7 @@ SIMPLE = (
     | {"/status", "/version", "확인", "취소", "다음", "지금 로그 보기"}
 )
 PARAMETER_PREFIXES = sorted(
-    set(USAGES) | {"브리핑 이력", "제안 보기", "확인", "관심종목 삭제"},
+    set(USAGES) | {"브리핑 이력", "브리핑 분류", "제안 보기", "확인", "관심종목 삭제"},
     key=len,
     reverse=True,
 )
@@ -268,6 +271,8 @@ class CommandNavigator:
             "command_choices",
             self.key(message),
             {
+                "id": uuid4().hex,
+                "labels": list(labels if labels is not None else options),
                 "options": list(options),
                 "expires_at": (
                     datetime.now(timezone.utc) + timedelta(minutes=5)

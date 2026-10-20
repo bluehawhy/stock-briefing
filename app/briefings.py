@@ -44,6 +44,7 @@ class BriefingEngine:
         if not lease:
             raise DataError("데이터 갱신이 이미 진행 중입니다.")
         LOG.info("Briefing started: day=%s", day)
+        self.entries = []
         self.collection_owner = lease
         owned_provider = self.provider is None
         provider = self.provider
@@ -59,6 +60,7 @@ class BriefingEngine:
                         provider = provider or KisProvider(self.settings, self.store)
                         holdings_body = self._generate(day, now, provider)
                     except (DataError, KeyError, TypeError, ValueError) as exc:
+                        self.entries = [e for e in self.entries if e["section"] != "보유종목"]
                         reason = str(exc) if isinstance(exc, DataError) else "보유종목 데이터 오류"
                         LOG.warning("Holdings briefing withheld: day=%s reason=%s", day, reason)
                         holdings_body = f"[보유종목]\n데이터 확인 필요: {reason}\n의견·수량 보류"
@@ -78,6 +80,7 @@ class BriefingEngine:
                 )
                 LOG.warning("Briefing withheld: day=%s reason=%s", day, reason)
                 body = f"발송일: {day}\n데이터 확인 필요: {reason}\n매매 의견·수량을 보류합니다."
+                self.entries = []
                 status = "data_required"
                 for symbol, _ in self.store.items("proposals"):
                     self.store.put(
@@ -91,6 +94,9 @@ class BriefingEngine:
                         },
                     )
             self.store.save_briefing(day, body)
+            from app.briefing_views import save_view
+
+            save_view(self.store, day, body, self.entries)
             self.store.put(
                 "runs", day.isoformat(), {"status": status, "at": now.isoformat()}
             )
@@ -121,7 +127,8 @@ class BriefingEngine:
                 if (end - expected).days > 14:
                     raise DataError("공개 일봉 기준일이 오래되었습니다.")
                 trading = [bar.day for bar in reference]
-                market = market_trend(public.kospi_bars(end), expected, trading)
+                index_bars = public.kospi_bars(end)
+                market = market_trend(index_bars, expected, trading)
             except (DataError, KeyError, ValueError, TypeError) as exc:
                 reason = str(exc) if isinstance(exc, DataError) else "공개 시장 데이터 오류"
                 for symbol, info in sorted(interests.items()):
@@ -144,6 +151,12 @@ class BriefingEngine:
                         bars = reference if symbol == "005930" else public.daily_bars(symbol, end)
                         values, action, score = watch_opinion(bars, expected, strategy, trading)
                         action, score = apply_market(values, action, score, strategy, market)
+                        from app.watch_history import history_context, apply_history
+
+                        context = history_context(bars, index_bars, expected, trading, market)
+                        action, score = apply_history(values, action, score, strategy, context)
+                        feature_event("watchlist.history", "decision", symbol=symbol,
+                                      signal=context["signal"], reason=context["reason"], action=action)
                         self.store.put("watch_proposals", symbol, {
                             "symbol": symbol, "name": info.get("name", symbol),
                             "day": expected.isoformat(), "action": action,
@@ -175,6 +188,10 @@ class BriefingEngine:
                         })
         finally:
             public.close()
+        for item, text in zip(highlights, results):
+            self.entries.append({"section": "관심종목", "symbol": item["symbol"],
+                                 "action": item["action"] if item["action"] in {"매수", "매도", "관망"} else "의견 보류",
+                                 "text": text})
         return (
             "[관심종목]\n공개 일봉 기준 · 가격/거래량·코스피 추세 반영 (기관·외국인 수급 제외)\n\n"
             + watch_highlights(highlights) + "\n\n"
@@ -320,6 +337,8 @@ class BriefingEngine:
                 ):
                     self.store.put("recommendations", key, result)
                 results[symbol] = self._format(result)
+                self.entries.append({"section": "보유종목", "symbol": symbol,
+                                     "action": action, "text": results[symbol]})
                 complete += 1
             except (DataError, KeyError, ValueError, TypeError) as exc:
                 reason = (
@@ -339,6 +358,8 @@ class BriefingEngine:
                 results[symbol] = (
                     f"{info.get('name', symbol)} ({symbol})\n데이터 확인 필요: {reason}\n의견·수량 보류"
                 )
+                self.entries.append({"section": "보유종목", "symbol": symbol,
+                                     "action": "의견 보류", "text": results[symbol]})
                 self.store.put(
                     "collection",
                     symbol,
