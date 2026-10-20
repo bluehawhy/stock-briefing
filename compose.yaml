@@ -20,6 +20,11 @@ services:
       - ./:/data
       - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}:/run/stock-briefing-secrets:ro
     logging: *logging
+    networks:
+      default:
+      stock-proxy:
+        aliases:
+          - stock-api
     ports:
       - "127.0.0.1:8001:8000"
     restart: unless-stopped
@@ -41,3 +46,8 @@ services:
       - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}:/run/stock-briefing-secrets:ro
     logging: *logging
     profiles: ["job"]
+
+networks:
+  stock-proxy:
+    external: true
+    name: stock-proxy
