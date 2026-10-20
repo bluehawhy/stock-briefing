@@ -38,7 +38,7 @@ class PublicMarketProvider:
                 "https://fchart.stock.naver.com/sise.nhn",
                 params={
                     "symbol": symbol, "timeframe": "day",
-                    "count": "600", "requestType": "0",
+                    "count": "1200", "requestType": "0",
                 },
             )
             feature_event("public_market.http", "response", http_status=response.status_code)
@@ -181,6 +181,10 @@ def format_watch(name: str, symbol: str, day: date, values: dict, action: str, s
     recent = [f"{label} {values[f'return_{label}']:+.1%}" for label in ("1주", "1개월", "3개월") if f"return_{label}" in values]
     if recent:
         lines.append("• 최근 흐름: " + ", ".join(recent))
+    if "history_3y" in values:
+        from app.watch_history import format_history
+
+        lines.append(format_history(values["history_3y"]))
     cautions = []
     if "high_20" in values:
         status = "고점 돌파" if close > values["high_20"] else "저점 이탈" if close < values["low_20"] else "범위 내"

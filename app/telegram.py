@@ -4,7 +4,8 @@ from app.logs import traced, feature_event
 
 import asyncio
 import logging
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -12,9 +13,90 @@ import httpx
 from app.config import Settings
 from app.services import BotService, InboundMessage
 from app.storage import Store
+from app.commands import CommandNavigator
+from app.briefing_views import daily_view, options, summary
 
 LOG = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
+
+
+def choice_markup(selection):
+    rows = []
+    for index, (command, label) in enumerate(zip(
+        selection["options"], selection.get("labels", selection["options"])
+    ), 1):
+        match = re.fullmatch(r"브리핑 분류 ([0-9a-f]{32}) (매수|매도|관망|의견 보류|전체)", command)
+        data = (f"brief:{match[1]}:{match[2]}" if match else
+                f"choice:{selection['id']}:{index}")
+        rows.append([{"text": label, "callback_data": data}])
+    rows.append([{"text": "메인 메뉴", "callback_data": "main"},
+                 {"text": "취소", "callback_data": "cancel"}])
+    return {"inline_keyboard": rows}
+
+
+def reply_markup(store, message, reply) -> dict | None:
+    selection = store.get("command_choices", CommandNavigator.key(message))
+    if selection and selection.get("id") and selection["expires_at"] > datetime.now(timezone.utc).isoformat():
+        return choice_markup(selection)
+    match = re.search(r"'(확인|주문 확인) ([0-9a-f]{16})'", reply)
+    if match:
+        return {"inline_keyboard": [[
+            {"text": "확인", "callback_data": f"confirm:{match[2]}"}]]}
+    return None
+
+
+def callback_command(store, message, data):
+    """Resolve opaque menu choices only in the authorized sender's conversation."""
+    if data in {"main", "cancel"}:
+        return "메인" if data == "main" else "취소"
+    match = re.fullmatch(r"brief:([0-9a-f]{32}):(매수|매도|관망|의견 보류|전체)", data)
+    if match:
+        return f"브리핑 분류 {match[1]} {match[2]}"
+    match = re.fullmatch(r"confirm:([0-9a-f]{16})", data)
+    if match:
+        return f"확인 {match[1]}"
+    match = re.fullmatch(r"choice:([0-9a-f]{32}):([0-9]+)", data)
+    if match:
+        selection = store.get("command_choices", CommandNavigator.key(message))
+        if (selection and selection.get("id") == match[1]
+                and selection["expires_at"] > datetime.now(timezone.utc).isoformat()
+                and 1 <= int(match[2]) <= len(selection["options"])):
+            return match[2]
+    return None
+
+
+async def process_update(api, service, settings, store, update):
+    callback = update.get("callback_query")
+    message = (callback.get("message") if callback else update.get("message")) or {}
+    user = (callback.get("from") if callback else message.get("from")) or {}
+    chat = message.get("chat") or {}
+    user_id, chat_id = str(user.get("id", "")), str(chat.get("id", ""))
+    if callback:
+        # Acknowledge promptly, before potentially blocking market collection.
+        try:
+            await api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+        except RuntimeError:
+            LOG.warning("Telegram callback acknowledgement failed")
+    if (user_id not in settings.telegram_allowed_user_ids or chat_id != user_id
+            or chat.get("type") != "private"):
+        return
+    text = message.get("text", "")
+    inbound = InboundMessage(channel="telegram", user_id=user_id, chat_id=chat_id,
+                             text=text if isinstance(text, str) else "", is_private=True,
+                             message_id=str(update["update_id"]))
+    if callback:
+        from dataclasses import replace
+
+        text = callback_command(store, inbound, callback.get("data", ""))
+        if text is None:
+            await api.send_text(chat_id, "버튼이 만료되었거나 이미 선택되었습니다. 메인 메뉴에서 다시 선택하세요.")
+            return
+        inbound = replace(inbound, text=text)
+    elif not isinstance(text, str) or not text:
+        return
+    reply = await asyncio.to_thread(service.handle, inbound)
+    if reply:
+        await api.send_text(chat_id, reply, reply_markup(store, inbound, reply))
 
 
 class TelegramAPI:
@@ -44,11 +126,14 @@ class TelegramAPI:
         return result["result"]
 
     @traced("telegram.send_text")
-    async def send_text(self, chat_id: str, text: str) -> None:
+    async def send_text(self, chat_id: str, text: str, markup: dict | None = None) -> None:
         # Keep chunks under Telegram's 4096-character sendMessage limit.
         while text:
             chunk, text = text[:4000], text[4000:]
-            await self.call("sendMessage", {"chat_id": chat_id, "text": chunk})
+            payload = {"chat_id": chat_id, "text": chunk}
+            if markup and not text:
+                payload["reply_markup"] = markup
+            await self.call("sendMessage", payload)
 
 
 async def poll(settings: Settings, store: Store) -> None:
@@ -63,31 +148,12 @@ async def poll(settings: Settings, store: Store) -> None:
                     {
                         "offset": store.poll_offset(),
                         "timeout": 30,
-                        "allowed_updates": ["message"],
+                        "allowed_updates": ["message", "callback_query"],
                     },
                 )
                 for update in updates:
                     update_id = update["update_id"]
-                    message = update.get("message") or {}
-                    user = message.get("from") or {}
-                    chat = message.get("chat") or {}
-                    if isinstance(message.get("text"), str):
-                        user_id = str(user.get("id", ""))
-                        chat_id = str(chat.get("id", ""))
-                        # Market collection is blocking; keep the event loop responsive.
-                        reply = await asyncio.to_thread(
-                            service.handle,
-                            InboundMessage(
-                                channel="telegram",
-                                user_id=user_id,
-                                chat_id=chat_id,
-                                text=message["text"],
-                                is_private=chat.get("type") == "private",
-                                message_id=str(update_id),
-                            )
-                        )
-                        if reply and chat_id:
-                            await api.send_text(chat_id, reply)
+                    await process_update(api, service, settings, store, update)
                     # Advance only after processing; a crash can replay a read-only command.
                     store.set_poll_offset(update_id + 1)
             except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
@@ -121,9 +187,15 @@ async def send_briefing(settings: Settings, store: Store) -> str:
         return "skipped: delivery is already recorded or awaiting review"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            await TelegramAPI(settings.telegram_bot_token, client).send_text(
-                chat_id, f"[국내주식 아침 브리핑: {day.isoformat()}]\n{record[1]}"
-            )
+            api = TelegramAPI(settings.telegram_bot_token, client)
+            view = daily_view(store, day)
+            if view and view["body"] == record[1]:
+                commands, labels = options(view)
+                await api.send_text(chat_id, summary(view), choice_markup({
+                    "id": view["id"], "options": commands, "labels": labels}))
+            else:
+                # Backward compatibility for briefings generated before snapshots existed.
+                await api.send_text(chat_id, f"[국내주식 아침 브리핑: {day.isoformat()}]\n{record[1]}")
     except Exception:
         # Do not retry blindly after an uncertain API outcome: that can duplicate a briefing.
         store.finish_delivery(
