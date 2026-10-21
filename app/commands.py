@@ -279,6 +279,8 @@ class CommandNavigator:
                 ).isoformat(),
             },
         )
+        if message.channel == "telegram":
+            return title or "메뉴를 선택하세요."
         return (
             title
             + "\n"
@@ -442,8 +444,8 @@ class CommandNavigator:
             return self.input_reply(replace(message, text=argument), pending, execute)
         canonical = ALIASES.get(text, text)
         if canonical == "메인":
-            self.menu(message, "", tuple(MENUS))
-            return HELP
+            reply = self.menu(message, "메뉴를 선택하세요.", tuple(MENUS))
+            return reply if message.channel == "telegram" else HELP
         if canonical in MENUS:
             return self.menu(
                 message, f"[{canonical}] 실행할 항목을 선택해주세요.", MENUS[canonical]
