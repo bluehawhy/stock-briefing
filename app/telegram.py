@@ -13,7 +13,7 @@ import httpx
 from app.config import Settings
 from app.services import BotService, InboundMessage
 from app.storage import Store
-from app.commands import CommandNavigator
+from app.commands import CommandNavigator, MENUS
 from app.briefing_views import daily_view, options, summary
 
 LOG = logging.getLogger(__name__)
@@ -22,14 +22,18 @@ KST = ZoneInfo("Asia/Seoul")
 
 def choice_markup(selection):
     rows = []
+    buttons = []
     for index, (command, label) in enumerate(zip(
         selection["options"], selection.get("labels", selection["options"])
     ), 1):
         match = re.fullmatch(r"브리핑 분류 ([0-9a-f]{32}) (매수|매도|관망|의견 보류|전체)", command)
         data = (f"brief:{match[1]}:{match[2]}" if match else
                 f"choice:{selection['id']}:{index}")
-        rows.append([{"text": label, "callback_data": data}])
-    rows.append([{"text": "메인 메뉴", "callback_data": "main"},
+        buttons.append({"text": label, "callback_data": data})
+    # Short categories share a row; longer action labels retain their own button.
+    columns = 2 if tuple(selection["options"]) == tuple(MENUS) else 1
+    rows.extend(buttons[start:start + columns] for start in range(0, len(buttons), columns))
+    rows.append([{"text": "메인", "callback_data": "main"},
                  {"text": "취소", "callback_data": "cancel"}])
     return {"inline_keyboard": rows}
 
