@@ -44,7 +44,7 @@ def _transport_allowed(request: Request) -> bool:
 
 
 def configured(request: Request):
-    if len(os.getenv('DASHBOARD_PASSWORD', '')) < 24:
+    if len(os.getenv('DASHBOARD_PASSWORD', '')) < 12:
         raise HTTPException(404)
     if not _transport_allowed(request):
         raise HTTPException(403, 'HTTPS 연결이 필요합니다.')
