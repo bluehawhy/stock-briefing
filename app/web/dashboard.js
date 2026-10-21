@@ -10,6 +10,7 @@ async function api(path, options = {}) {
     headers: {'X-Dashboard-Request': '1', ...(options.body ? {'Content-Type': 'application/json'} : {})},
     signal: AbortSignal.timeout(45000)
   });
+  if (response.status === 401) { window.location.replace('/stock-briefing/login'); throw new Error('로그인이 필요합니다.'); }
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(response.status === 401 ? '인증이 만료되었습니다. 페이지를 다시 열어 로그인하세요.' :
@@ -128,3 +129,11 @@ $('watch-form').addEventListener('submit', async event => {
 });
 $('today').textContent = new Intl.DateTimeFormat('ko-KR', {timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'}).format(new Date()) + ' · DAILY NOTE';
 loadOverview().then(() => notice('저장된 최신 분석입니다. 새 분석은 브리핑 갱신으로 요청하세요.')).catch(error => notice(error.message));
+
+$('logout').addEventListener('click', async () => {
+  try {
+    const response = await fetch('/stock-briefing/api/logout', {method: 'POST', credentials: 'same-origin', headers: {'X-Dashboard-Request': '1'}});
+    if (!response.ok) throw new Error('로그아웃하지 못했습니다. 다시 시도하세요.');
+    window.location.replace('/stock-briefing/login');
+  } catch (error) { notice(error.message); }
+});

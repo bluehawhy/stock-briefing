@@ -1,13 +1,16 @@
 """Private, same-origin web dashboard backed by the existing SQLite store."""
 from datetime import date
 import ipaddress
-from hmac import compare_digest
+from hmac import compare_digest, new as hmac_new
+from hashlib import sha256
+import secrets
+import time
+from threading import Lock
 from pathlib import Path
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import FileResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.config import Settings
@@ -16,7 +19,10 @@ from app.services import BotService
 from app.storage import Store
 from app.symbols import SymbolResolver
 
-security = HTTPBasic(auto_error=False)
+COOKIE = "stock_briefing_session"
+SESSION_SECONDS = 12 * 60 * 60
+_login_attempts = {}
+_login_lock = Lock()
 ASSETS = Path(__file__).with_name('web')
 HEADERS = {
     'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
@@ -37,39 +43,112 @@ def _transport_allowed(request: Request) -> bool:
     return address.is_private and not address.is_loopback
 
 
-def authorize(request: Request, response: Response,
-              credentials: HTTPBasicCredentials | None = Depends(security)):
-    password = os.getenv('DASHBOARD_PASSWORD', '')
-    if len(password) < 24:
+def configured(request: Request):
+    if len(os.getenv('DASHBOARD_PASSWORD', '')) < 24:
         raise HTTPException(404)
     if not _transport_allowed(request):
         raise HTTPException(403, 'HTTPS 연결이 필요합니다.')
-    valid_user = compare_digest((credentials.username if credentials else '').encode(),
-                                os.getenv('DASHBOARD_USERNAME', 'admin').encode())
-    valid_password = compare_digest((credentials.password if credentials else '').encode(), password.encode())
-    if not (valid_user and valid_password):
-        raise HTTPException(401, '로그인이 필요합니다.', headers={'WWW-Authenticate': 'Basic realm="stock-briefing", charset="UTF-8"', **HEADERS})
+
+
+def same_origin(request: Request):
+    if request.headers.get('x-dashboard-request') != '1' or request.headers.get('sec-fetch-site') == 'cross-site':
+        raise HTTPException(403, '웹 대시보드에서 다시 요청하세요.')
+    origin = request.headers.get('origin')
+    if origin and origin != str(request.base_url).rstrip('/'):
+        raise HTTPException(403, '웹 대시보드에서 다시 요청하세요.')
+
+
+def signature(value: str) -> str:
+    # Credential changes immediately invalidate every existing cookie.
+    key = sha256((os.getenv('DASHBOARD_USERNAME', 'admin') + '\0' +
+                  os.getenv('DASHBOARD_PASSWORD', '')).encode()).digest()
+    return hmac_new(key, value.encode(), sha256).hexdigest()
+
+
+def signed_in(request: Request) -> bool:
+    token = request.cookies.get(COOKIE, '')
+    if len(token) > 256:
+        return False
+    try:
+        expiry, nonce, digest = token.split('.')
+        remaining = int(expiry) - time.time()
+        return (0 < remaining <= SESSION_SECONDS and len(nonce) == 32 and
+                compare_digest(digest, signature(expiry + '.' + nonce)))
+    except (ValueError, OverflowError):
+        return False
+
+
+def authorize(request: Request, response: Response):
+    configured(request)
+    if not signed_in(request):
+        raise HTTPException(401, '로그인이 필요합니다.', headers=HEADERS)
     response.headers.update(HEADERS)
     if request.method not in {'GET', 'HEAD'}:
-        if request.headers.get('x-dashboard-request') != '1' or request.headers.get('sec-fetch-site') == 'cross-site':
-            raise HTTPException(403, '웹 대시보드에서 다시 요청하세요.')
+        same_origin(request)
     store = Store(Settings.from_env().db_path)
     store.init()
     return store
 
 
-router = APIRouter(prefix='/stock-briefing', dependencies=[Depends(authorize)])
+router = APIRouter(prefix='/stock-briefing', dependencies=[Depends(configured)])
 
 
 @router.get('', include_in_schema=False)
 @router.get('/', include_in_schema=False)
-def page():
+def page(request: Request):
+    if not signed_in(request):
+        return RedirectResponse('/stock-briefing/login', status_code=303, headers=HEADERS)
     return FileResponse(ASSETS / 'index.html', headers=HEADERS)
+
+
+@router.get('/login', include_in_schema=False)
+def login_page(request: Request):
+    if signed_in(request):
+        return RedirectResponse('/stock-briefing/', status_code=303, headers=HEADERS)
+    return FileResponse(ASSETS / 'login.html', headers=HEADERS)
+
+
+class LoginInput(BaseModel):
+    username: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+@router.post('/api/login', dependencies=[Depends(same_origin)])
+def login(payload: LoginInput, request: Request):
+    now = time.monotonic()
+    peer = request.client.host if request.client else 'unknown'
+    with _login_lock:
+        for key in list(_login_attempts):
+            if now - _login_attempts[key][0] >= 300:
+                del _login_attempts[key]
+        started, attempts = _login_attempts.get(peer, (now, 0))
+        if attempts >= 10 or (peer not in _login_attempts and len(_login_attempts) >= 4096):
+            raise HTTPException(429, '잠시 후 다시 로그인하세요.', headers={'Retry-After': '300'})
+        _login_attempts[peer] = (started, attempts + 1)
+    valid_user = compare_digest(payload.username.encode(), os.getenv('DASHBOARD_USERNAME', 'admin').encode())
+    valid_password = compare_digest(payload.password.encode(), os.getenv('DASHBOARD_PASSWORD', '').encode())
+    if not (valid_user and valid_password):
+        raise HTTPException(401, '아이디 또는 비밀번호를 확인하세요.', headers=HEADERS)
+    with _login_lock:
+        _login_attempts.pop(peer, None)
+    value = str(int(time.time()) + SESSION_SECONDS) + '.' + secrets.token_hex(16)
+    response = Response(status_code=204, headers=HEADERS)
+    response.set_cookie(COOKIE, value + '.' + signature(value), max_age=SESSION_SECONDS,
+                        httponly=True, secure=request.url.scheme == 'https',
+                        samesite='strict', path='/stock-briefing')
+    return response
+
+
+@router.post('/api/logout', dependencies=[Depends(same_origin)])
+def logout():
+    response = Response(status_code=204, headers=HEADERS)
+    response.delete_cookie(COOKIE, path='/stock-briefing', httponly=True, samesite='strict')
+    return response
 
 
 @router.get('/assets/{filename}', include_in_schema=False)
 def asset(filename: str):
-    if filename not in {'dashboard.css', 'dashboard.js'}:
+    if filename not in {'dashboard.css', 'dashboard.js', 'login.js'}:
         raise HTTPException(404)
     return FileResponse(ASSETS / filename, headers=HEADERS)
 
