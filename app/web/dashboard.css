@@ -19,3 +19,7 @@
 .stock-opinion summary::-webkit-details-marker{display:none}
 .stock-opinion summary:focus-visible{outline:3px solid #58a78e;outline-offset:3px}
 .stock-reason{position:absolute;z-index:2;top:calc(100% - 4px);left:12px;right:12px;margin:0;padding:12px;background:#fff;border:1px solid #dce5de;border-radius:8px;box-shadow:0 4px 12px #263d271a;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+
+.brand-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px}
+.brand-row .brand{min-width:0;white-space:nowrap}
+.brand-row #logout{flex-shrink:0;white-space:nowrap;margin-left:auto;min-height:44px;padding:8px 4px}
