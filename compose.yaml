@@ -5,10 +5,8 @@ x-build: &build
     BUILD_COMMIT: ${BUILD_COMMIT:-unknown}
 
 x-logging: &logging
-  driver: json-file
-  options:
-    max-size: "10m"
-    max-file: "3"
+  # 100-day retention is managed by the Ubuntu host journal.
+  driver: journald
 
 services:
   api:
