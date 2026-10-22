@@ -3,6 +3,8 @@
 *.db-wal
 *.db-shm
 *.db.backup*
+*.dump
+compose.scheduler.yaml
 __pycache__/
 .pytest_cache/
 .venv/

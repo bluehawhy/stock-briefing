@@ -17,9 +17,20 @@ export BUILD_TIME
 BUILD_COMMIT="$(git rev-parse HEAD)"
 BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')"
 
-# Include the scheduled worker so all services use the same build identity.
-docker compose build api telegram worker
-docker compose up -d api telegram
-docker compose ps
-curl -fsS http://127.0.0.1:8000/healthz
+# Preserve every production override, including scheduler activation.
+mapfile -t metadata < <(docker inspect stock-briefing-api-1 --format '{{json .Config.Labels}}' | python3 -c '
+import json,sys
+labels=json.load(sys.stdin)
+print(labels["com.docker.compose.project"])
+print(labels["com.docker.compose.project.working_dir"])
+print(labels["com.docker.compose.project.config_files"])
+')
+[[ ${#metadata[@]} == 3 && "${metadata[1]}" == "$PWD" ]] || { echo 'Deployment metadata mismatch'; exit 1; }
+compose=(docker compose --project-name "${metadata[0]}" --project-directory "$PWD")
+IFS=',' read -ra files <<< "${metadata[2]}"
+for file in "${files[@]}"; do compose+=(--file "$file"); done
+"${compose[@]}" build api telegram
+"${compose[@]}" up -d db api telegram
+"${compose[@]}" ps
+"${compose[@]}" exec -T api python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/healthz").read().decode())'
 printf '\n업데이트 완료. 텔레그램에서 버전을 입력하세요.\n'

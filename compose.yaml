@@ -11,9 +11,18 @@ x-logging: &logging
 services:
   api:
     build: *build
+    depends_on:
+      db:
+        condition: service_healthy
     env_file: .env
     environment:
       DASHBOARD_ALLOW_HTTP_PRIVATE: "1"
+      DAILY_SCHEDULER_ENABLED: ${DAILY_SCHEDULER_ENABLED:-0}
+      STOCK_DATABASE_BACKEND: postgres
+      POSTGRES_HOST: db
+      POSTGRES_DB: stock_briefing
+      POSTGRES_USER: stock_briefing
+      POSTGRES_PASSWORD_FILE: /run/stock-briefing-secrets/postgres_password
     volumes:
       - ./:/data
       - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}:/run/stock-briefing-secrets:ro
@@ -28,24 +37,50 @@ services:
     restart: unless-stopped
   telegram:
     build: *build
+    depends_on:
+      db:
+        condition: service_healthy
     env_file: .env
     command: ["python", "-m", "app.cli", "poll"]
+    environment:
+      STOCK_DATABASE_BACKEND: postgres
+      POSTGRES_HOST: db
+      POSTGRES_DB: stock_briefing
+      POSTGRES_USER: stock_briefing
+      POSTGRES_PASSWORD_FILE: /run/stock-briefing-secrets/postgres_password
     volumes:
       - ./:/data
       - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}:/run/stock-briefing-secrets:ro
     logging: *logging
     restart: unless-stopped
-  worker:
-    build: *build
-    env_file: .env
-    command: ["python", "-m", "app.cli", "run-daily"]
+  db:
+    image: postgres:17-alpine
+    # Keep the host secret at 0600; PostgreSQL switches to its own UID.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - "umask 077; cp /run/secrets/postgres_password /run/stock-db-secret/password; chown postgres:postgres /run/stock-db-secret/password; exec /usr/local/bin/docker-entrypoint.sh postgres"
+    tmpfs:
+      - /run/stock-db-secret
+    environment:
+      POSTGRES_DB: stock_briefing
+      POSTGRES_USER: stock_briefing
+      POSTGRES_PASSWORD_FILE: /run/stock-db-secret/password
     volumes:
-      - ./:/data
-      - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}:/run/stock-briefing-secrets:ro
+      - stock_postgres:/var/lib/postgresql/data
+      - ${BROKER_SECRETS_DIR:-../stock-briefing-secrets}/postgres_password:/run/secrets/postgres_password:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stock_briefing -d stock_briefing"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     logging: *logging
-    profiles: ["job"]
+    restart: unless-stopped
 
 networks:
   stock-proxy:
     external: true
     name: stock-proxy
+
+
+volumes:
+  stock_postgres:

@@ -69,27 +69,9 @@ def main() -> None:
     elif args.command == "generate-briefing":
         print(BriefingEngine(settings, store).generate())
     elif args.command == "run-daily":
-        from datetime import datetime
-        from app.services import KST
+        from app.scheduler import run_daily
 
-        day = datetime.now(KST).date()
-        owner = store.acquire_lease("daily-worker", 7200)
-        if not owner:
-            print("skipped: daily worker already running")
-            return
-        try:
-            with store.connect() as db:
-                sent = db.execute(
-                    "SELECT status FROM delivery_runs WHERE briefing_date=? AND channel='telegram'",
-                    (day.isoformat(),),
-                ).fetchone()
-            if sent:
-                print("skipped: delivery is already recorded or awaiting review")
-                return
-            BriefingEngine(settings, store).generate()
-            print(asyncio.run(send_briefing(settings, store)))
-        finally:
-            store.release_lease("daily-worker", owner)
+        print(run_daily(settings, store))
     elif args.command == "backup":
         store.backup(args.file)
         print("backed up")
@@ -129,3 +111,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

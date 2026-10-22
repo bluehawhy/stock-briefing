@@ -16,12 +16,20 @@ def _now() -> str:
 
 
 class Store:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, allow_unmigrated=False):
         self.path = path
         self._initialized = False
+        self.allow_unmigrated = allow_unmigrated
+        from app.database import database_options
+        self.database_options = database_options()
 
     @contextmanager
     def connect(self):
+        if self.database_options is not None:
+            from app.database import connect_postgres
+            with connect_postgres(self.database_options) as db:
+                yield db
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -103,6 +111,12 @@ class Store:
                     detail TEXT NOT NULL, created_at TEXT NOT NULL
                 );
             """)
+            if self.database_options is not None:
+                db.execute("CREATE TABLE IF NOT EXISTS database_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                if not self.allow_unmigrated and not db.execute(
+                    "SELECT 1 FROM database_metadata WHERE key='sqlite_import_complete'"
+                ).fetchone():
+                    raise RuntimeError("PostgreSQL data import is required before starting services")
         self._initialized = True
 
     def get(self, kind: str, key: str, default=None):
@@ -265,9 +279,10 @@ class Store:
             ).fetchone()
             if row:
                 return row[0]
-            return db.execute(
-                "INSERT INTO jobs(status,updated_at) VALUES ('queued',?)", (_now(),)
-            ).lastrowid
+            statement = "INSERT INTO jobs(status,updated_at) VALUES ('queued',?)"
+            if self.database_options is not None:
+                return db.execute(statement + " RETURNING id", (_now(),)).fetchone()[0]
+            return db.execute(statement, (_now(),)).lastrowid
 
     def claim_job(self) -> int | None:
         self.init()
@@ -335,6 +350,8 @@ class Store:
 
     @traced("storage.backup")
     def backup(self, destination: Path) -> None:
+        if self.database_options is not None:
+            raise ValueError("Use pg_dump in the db service to back up PostgreSQL")
         destination = destination.resolve()
         if destination == self.path.resolve() or destination.exists():
             raise ValueError("Choose a new backup path")
@@ -435,3 +452,4 @@ class Store:
                    WHERE briefing_date=? AND channel='telegram'""",
                 (status, detail[:300], _now(), day.isoformat()),
             )
+

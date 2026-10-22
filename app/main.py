@@ -1,4 +1,5 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
@@ -17,6 +18,7 @@ async def lifespan(app):
     settings = Settings.from_env()
     store = Store(settings.db_path)
     install_log_capture(store)
+    app.state.store = store
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()
 
@@ -31,9 +33,17 @@ async def lifespan(app):
 
     loop.set_exception_handler(handle_exception)
     task = asyncio.create_task(process_jobs(settings, store))
+    stop = asyncio.Event()
+    scheduler_task = None
+    if os.getenv('DAILY_SCHEDULER_ENABLED', '0') == '1':
+        from app.scheduler import daily_schedule
+        scheduler_task = asyncio.create_task(daily_schedule(settings, store, stop))
     try:
         yield
     finally:
+        stop.set()
+        if scheduler_task is not None:
+            await scheduler_task
         loop.set_exception_handler(previous_handler)
         task.cancel()
         with suppress(asyncio.CancelledError):
@@ -56,4 +66,9 @@ async def dashboard_headers(request, call_next):
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+    store = app.state.store
+    with store.connect() as db:
+        db.execute("SELECT 1").fetchone()
+    return {"status": "ok", "database": "postgres" if store.database_options else "sqlite",
+            "daily_scheduler": "enabled" if os.getenv('DAILY_SCHEDULER_ENABLED', '0') == '1' else "disabled"}
+
