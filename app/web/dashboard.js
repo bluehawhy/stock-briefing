@@ -41,15 +41,30 @@ function renderWatch() {
     root.append(element('p', '아직 관심종목이 없습니다. 첫 종목을 추가해 보세요.', 'empty')); return;
   }
   for (const record of overview.watchlist) {
-    const card = element('article', null, 'card');
-    const head = element('div', null, 'stock-head'), label = element('div');
-    label.append(element('h2', record.name), element('small', record.symbol));
-    head.append(label, element('span', {'매수': '매수 검토', '매도': '매도 검토'}[record.action] || record.action, 'pill'));
-    card.append(head, element('p', record.close == null ? '분석 대기' : number(record.close) + '원', 'price'));
-    if (record.daily_return != null) card.append(element('p', '전일 대비 ' + (record.daily_return > 0 ? '+' : '') + (record.daily_return * 100).toFixed(1) + '%', record.daily_return >= 0 ? 'up' : 'down'));
-    if (record.reason) card.append(element('p', record.reason, 'muted'));
-    const bottom = element('div', null, 'stock-bottom');
-    bottom.append(element('span', record.day ? record.day + ' 종가' : '갱신 후 의견 표시', 'muted'));
+    const card = element('article', null, 'card stock-card');
+    const head = element('div', null, 'stock-head'), label = element('div', null, 'stock-label');
+    const name = element('h2', record.name); name.title = record.name;
+    label.append(name, element('small', record.symbol));
+    const action = {'매수': '매수 검토', '매도': '매도 검토'}[record.action] || record.action;
+    let opinion = element('span', action, 'pill');
+    if (record.reason) {
+      opinion = element('details', null, 'stock-opinion');
+      const summary = element('summary', action, 'pill');
+      summary.setAttribute('aria-label', action + ' · 분석 사유 보기');
+      opinion.append(summary, element('p', record.reason, 'stock-reason'));
+    }
+    head.append(label, opinion);
+    const quote = element('div', null, 'stock-quote');
+    quote.append(element('span', record.close == null ? '분석 대기' : number(record.close) + '원', 'price'));
+    if (record.daily_return != null) {
+      const change = element('span', (record.daily_return > 0 ? '+' : '') + (record.daily_return * 100).toFixed(1) + '%', record.daily_return >= 0 ? 'up' : 'down');
+      change.setAttribute('aria-label', '전일 대비 ' + change.textContent);
+      quote.append(change);
+    }
+    const basis = element('span', record.day ? record.day.slice(5) + ' 종가' : '기준일 없음', 'stock-basis');
+    basis.title = record.day ? record.day + ' 종가' : '갱신 후 의견 표시';
+    basis.setAttribute('aria-label', basis.title);
+    quote.append(basis);
     const remove = element('button', '제거', 'remove'); remove.type = 'button';
     remove.setAttribute('aria-label', record.name + ' 관심종목에서 제거');
     remove.addEventListener('click', async () => {
@@ -59,7 +74,7 @@ function renderWatch() {
       catch (error) { notice(error.message); }
       finally { remove.disabled = false; }
     });
-    bottom.append(remove); card.append(bottom); root.append(card);
+    head.append(remove); card.append(head, quote); root.append(card);
   }
 }
 function schedulePoll() {
