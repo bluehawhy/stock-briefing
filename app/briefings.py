@@ -478,19 +478,32 @@ class BriefingEngine:
             self.store.put("evaluations", key, result)
 
 
+def _process_job(settings, store):
+    """Keep each synchronous DB connection and its transaction in this thread."""
+    job = store.claim_job()
+    if job is None:
+        return False
+    try:
+        BriefingEngine(settings, store).generate()
+    except Exception as exc:
+        LOG.warning("Refresh job failed (%s)", type(exc).__name__, exc_info=True)
+        store.finish_job(job, "failed", "갱신 실패. 서비스 상태 확인 후 다시 요청하세요.")
+    else:
+        store.finish_job(job, "done", "브리핑 생성 완료. 브리핑 이력에서 저장된 결과를 확인하세요.")
+    return True
+
+
 async def process_jobs(settings: Settings, store: Store) -> None:
+    from app.background import run_blocking
+    from app.logs import log_python_exception
+
     while True:
-        job = store.claim_job()
-        if job is None:
-            await asyncio.sleep(1)
-            continue
         try:
-            await asyncio.to_thread(BriefingEngine(settings, store).generate)
-            store.finish_job(
-                job, "done", "브리핑 생성 완료. 브리핑 이력에서 저장된 결과를 확인하세요."
-            )
+            processed = await run_blocking(_process_job, settings, store)
         except Exception as exc:
-            LOG.warning("Refresh job failed (%s)", type(exc).__name__, exc_info=True)
-            store.finish_job(
-                job, "failed", "갱신 실패. 서비스 상태 확인 후 다시 요청하세요."
-            )
+            await run_blocking(log_python_exception, "refresh_worker", exc)
+            # Do not replay a claimed job after an ambiguous completion write.
+            await asyncio.sleep(5)
+        else:
+            if not processed:
+                await asyncio.sleep(1)

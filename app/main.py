@@ -11,13 +11,14 @@ from app.briefings import process_jobs
 from app.config import Settings
 from app.storage import Store
 from app.logs import install_log_capture, log_python_exception
+from app.background import run_blocking
 
 
 @asynccontextmanager
 async def lifespan(app):
     settings = Settings.from_env()
     store = Store(settings.db_path)
-    install_log_capture(store)
+    await run_blocking(install_log_capture, store)
     app.state.store = store
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()

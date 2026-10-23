@@ -8,34 +8,12 @@ if [[ -e compose.scheduler.yaml ]]; then
     exit 1
 fi
 
-# Resolve the real running project, complete override order and SQLite mount.
-mapfile -t deployment < <(docker inspect stock-briefing-api-1 | python3 -c '
-import json, pathlib, sys
-c=json.load(sys.stdin)[0]
-labels=c["Config"]["Labels"]
-print(labels["com.docker.compose.project"])
-print(labels["com.docker.compose.project.working_dir"])
-print(labels["com.docker.compose.project.config_files"])
-env=dict(v.split("=",1) for v in c["Config"]["Env"])
-if env.get("STOCK_DATABASE_BACKEND", "sqlite") != "sqlite":
-    raise SystemExit("Migration requires the old SQLite API container")
-p=pathlib.PurePosixPath(env.get("SQLITE_PATH", "/data/stock-briefing.db"))
-mounts=sorted(c["Mounts"], key=lambda m: len(m["Destination"]), reverse=True)
-for m in mounts:
-    base=pathlib.PurePosixPath(m["Destination"])
-    if p.is_relative_to(base):
-        print(pathlib.Path(m["Source"]) / str(p.relative_to(base)))
-        print(str(p))
-        break
-else:
-    raise SystemExit("SQLite host mount could not be resolved")
-')
-[[ ${#deployment[@]} == 5 ]] || { echo 'Deployment metadata incomplete'; exit 1; }
-[[ "${deployment[1]}" == "$PWD" ]] || { echo 'Working directory mismatch'; exit 1; }
+# Restore deployment paths without printing environment values.
+source scripts/compose-context.sh
+load_compose_context "$@"
+[[ "$deployment_backend" == sqlite ]] || { echo 'Migration requires the old SQLite API container'; exit 1; }
 [[ -f "${deployment[3]}" ]] || { echo 'SQLite database missing'; exit 1; }
-compose=(docker compose --project-name "${deployment[0]}" --project-directory "$PWD")
-IFS=',' read -ra files <<< "${deployment[2]}"
-for file in "${files[@]}"; do compose+=(--file "$file"); done
+validate_compose_context
 
 # Confirm the effective backend is PostgreSQL, honoring all managed overrides.
 configuration=$("${compose[@]}" config --format json)

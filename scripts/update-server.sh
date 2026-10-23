@@ -17,18 +17,10 @@ export BUILD_TIME
 BUILD_COMMIT="$(git rev-parse HEAD)"
 BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')"
 
-# Preserve every production override, including scheduler activation.
-mapfile -t metadata < <(docker inspect stock-briefing-api-1 --format '{{json .Config.Labels}}' | python3 -c '
-import json,sys
-labels=json.load(sys.stdin)
-print(labels["com.docker.compose.project"])
-print(labels["com.docker.compose.project.working_dir"])
-print(labels["com.docker.compose.project.config_files"])
-')
-[[ ${#metadata[@]} == 3 && "${metadata[1]}" == "$PWD" ]] || { echo 'Deployment metadata mismatch'; exit 1; }
-compose=(docker compose --project-name "${metadata[0]}" --project-directory "$PWD")
-IFS=',' read -ra files <<< "${metadata[2]}"
-for file in "${files[@]}"; do compose+=(--file "$file"); done
+# Preserve Compose and environment-file order; validate before any build/recreate.
+source scripts/compose-context.sh
+load_compose_context "$@"
+validate_compose_context
 "${compose[@]}" build api telegram
 "${compose[@]}" up -d db api telegram
 "${compose[@]}" ps
