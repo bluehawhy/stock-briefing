@@ -13,7 +13,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Docker Compose가 프로젝트 디렉터리를 `/data`에 마운트하므로 SQLite 파일 `stock-briefing.db`와 WAL 파일은 프로젝트 최상단에 생성됩니다. 컨테이너가 이 디렉터리에 쓸 수 있어야 합니다. `.env`와 DB 파일을 Git에 올리지 마세요.
+운영 DB는 PostgreSQL입니다. 이 안내의 봇 명령은 [DB 이전 절차](../POSTGRES_MIGRATION.md)를 완료한 서버를 기준으로 합니다. 기존 SQLite 원본과 master.key를 보존하고, 실제 환경변수·키·DB 파일을 Git에 올리지 마세요. 아래 Compose 예시는 실제 전체 운영 override 목록에 맞춰 실행하세요.
 
 ## 2. 텔레그램 봇 만들기
 
@@ -39,7 +39,7 @@ docker compose run --rm telegram python -m app.cli send-test
 
 카카오 계정으로 [카카오비즈니스](https://business.kakao.com/)와 [챗봇 관리자센터](https://chatbot.kakao.com/)에 가입하고, 카카오톡 채널을 생성합니다. 관리자센터에서 `카카오톡 챗봇`을 만들고 **설정 → 챗봇 관리 → 카카오톡 채널 연결**에서 채널을 연결합니다. 운영 채널에 적용하려면 봇을 배포해야 합니다.
 
-스킬 URL은 집 서버에 들어오는 공개 HTTPS 주소가 필요합니다. DNS, 공유기 포트 포워딩/방화벽, TLS 역방향 프록시를 설정하고 `deploy/Caddyfile.example`을 서버 환경에 맞게 적용합니다. API 컨테이너는 기본적으로 호스트의 `127.0.0.1:8000`에만 노출됩니다. 외부에는 프록시의 HTTPS만 공개하세요.
+스킬 URL은 집 서버에 들어오는 공개 HTTPS 주소가 필요합니다. DNS, 공유기 포트 포워딩/방화벽, TLS 역방향 프록시를 설정하고 `deploy/Caddyfile.example`을 서버 환경에 맞게 적용합니다. API 컨테이너는 기본적으로 호스트의 `127.0.0.1:8001`에만 노출됩니다. 외부에는 프록시의 HTTPS만 공개하세요.
 
 ```bash
 # 임의의 긴 URL 비밀값을 만들고 출력 값을 .env에 직접 보관
@@ -56,20 +56,10 @@ python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
 
 ## 4. 08:30 브리핑 발송 점검
 
-데이터 수집과 분리해 전달 경로만 확인할 때는 테스트 문구를 해당 **발송일(한국 시간)**로 저장하고 `send-briefing`을 명시합니다. 기본 worker는 데이터를 수집하고 브리핑을 새로 생성합니다.
-
-```bash
-docker compose --profile job run -T --rm worker python -m app.cli save-briefing --date YYYY-MM-DD --file - < briefing.txt
-docker compose --profile job run --rm worker python -m app.cli send-briefing
-```
-
-worker의 당일 발송 기록이 생기므로 같은 날짜로 여러 번 시험하려고 반복 실행하지 마세요. 실제 예약은 `deploy/systemd/stock-briefing.service`의 `WorkingDirectory`를 설치 경로로 바꾸고 service/timer를 `/etc/systemd/system/`에 설치한 뒤 다음처럼 켭니다.
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now stock-briefing.timer
-systemctl list-timers stock-briefing.timer
-```
+API의 스케줄러가 매일 한국 시간 08:30에 수집·분석·저장·발송합니다.
+API 로그의 Daily scheduler started/result와 DB delivery_runs를 확인합니다.
+구 systemd 타이머를 새로 설치하지 않습니다. 기존 서버 전환은 [이전 절차](../POSTGRES_MIGRATION.md)를 따릅니다.
+수동 발송은 실제 메시지를 전송하므로 정기 점검 용도로 반복 실행하지 않습니다.
 
 ## 계정 연결에 필요한 값
 
@@ -82,3 +72,4 @@ systemctl list-timers stock-briefing.timer
 | 서버 도메인 | DNS, HTTPS 프록시, 관리자센터 스킬 URL | 가능 |
 
 참고: [Telegram BotFather](https://core.telegram.org/bots/features#botfather), [카카오 챗봇 만들기](https://kakaobusiness.gitbook.io/main/tool/chatbot/tutorial/make_chatbot/tutorial_1), [스킬 만들기](https://kakaobusiness.gitbook.io/main/tool/chatbot/skill_guide/make_skill), [스킬과 블록 연결](https://kakaobusiness.gitbook.io/main/tool/chatbot/tutorial/make_chatbot/tutorial_3), [배포](https://kakaobusiness.gitbook.io/main/tool/chatbot/main_notions/deploy).
+

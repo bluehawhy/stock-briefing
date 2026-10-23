@@ -1,9 +1,0 @@
-[Unit]
-Description=Collect, generate and send the morning stock briefing to Telegram
-Requires=docker.service
-After=docker.service
-
-[Service]
-Type=oneshot
-WorkingDirectory=/home/mins/source/stock-briefing
-ExecStart=/usr/bin/docker compose --profile job run --rm worker

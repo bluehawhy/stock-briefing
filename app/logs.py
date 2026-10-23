@@ -21,6 +21,7 @@ from app.models import DataError
 KST = ZoneInfo("Asia/Seoul")
 # Only diagnostics designed for chat are persisted. Provider/HTTP logs can contain secrets.
 SAFE_PREFIXES = {
+    "app.scheduler": ("Daily scheduler started:", "Daily scheduler result:"),
     "app.models": ("Strategy validation failed:",),
     "app.briefings": (
         "Briefing started:", "Briefing saved:", "Briefing withheld:",
@@ -253,3 +254,4 @@ def traced(feature):
         wrapper.__signature__ = inspect.signature(fn, eval_str=True)
         return wrapper
     return decorate
+

@@ -5,139 +5,37 @@
 ## 구현 범위
 
 - 한국투자증권 조회용 REST 어댑터: 토큰 발급·암호화 캐시, 거래소 일정, 수정주가 일봉 페이지 조회, 최근 확정 기관·외국인 수급, 선택 계좌의 잔고 연속조회
-- SQLite 증분 수집: 처음에는 52주 계산에 필요한 과거 구간을 채우고, 이후에는 빠진 거래일만 요청; 일봉·수급 별도 upsert
+- DB 증분 수집: 처음에는 52주 계산에 필요한 과거 구간을 채우고, 이후에는 빠진 거래일만 요청; 일봉·수급 별도 upsert
 - 이동평균·교차, 52주 범위·전일 위치 변화, 거래량 비율, 기관·외국인 순매수·직전 구간 비교
 - 설명 가능한 7개 조건 점수와 정수 수량 계산: 보유금액 한도, 공통 매수 예산, 비용, 매도 비율 반영
 - 데이터·보유량·전략 설정 누락 시 `데이터 확인 필요`; 이전 의견을 최신 제안으로 재사용하지 않음
-- worker의 수집 → 분석 → DB 저장 → 텔레그램 발송; 발송일별 예약으로 중복 방지
+- API 스케줄러의 수집 → 분석 → DB 저장 → 텔레그램 발송; 발송일별 예약으로 중복 방지
 - 관심종목·보유량·추적 계좌·전략·알림 관리, 오늘 브리핑 자동 생성·이력·상태 조회
 - 채널·사용자·대화에 묶인 5분 일회용 변경 확인, 텔레그램 update 중복 응답 캐시
 - 종가 기반 모의 성과: 당시 제안 가격·수량·정책·비용 스냅샷, 설정 거래일 후 관측 가격 평가
 - 주문 중지·한도 설정 및 **제출 불가 미리보기**. 실제 주문 API는 구현에 포함하지 않음
-- WAL 동시접근, 데이터 수집 lease, 제한된 API 재시도, 비밀 URL 로그 억제, 온라인 DB 백업
+- PostgreSQL 트랜잭션·수집 잠금, 제한된 API 재시도, 비밀 URL 로그 억제, pg_dump 백업
 
 **실계좌 API 키/권한 검증과 투자 전략·예산 설정은 운영자 설정이 필요합니다.** 임의의 투자 기간·가중치·예산을 자동 기본값으로 적용하지 않습니다. 미래에셋 국내주식 API는 확인된 명세·개인 이용 권한이 없어 지원 불가 상태를 안내하는 어댑터만 제공합니다. 모의 KIS 환경은 일정·수급 지원이 확인되지 않으면 분석을 보류합니다.
 
-## 1. Ubuntu 초기 설치·설정 (최초 1회)
+## 운영 구성: API · PostgreSQL · 텔레그램
 
-Ubuntu에 Git과 Docker, Docker Compose 플러그인이 설치되어 있고 현재 사용자로 Docker를 실행할 수 있어야 합니다. 아래 명령으로 확인합니다.
+- **api**: 웹/API, 갱신 큐, 매일 08:30 Asia/Seoul 정기 분석·발송을 담당합니다.
+- **db**: PostgreSQL 전용 컨테이너와 영속 볼륨입니다. 호스트 포트는 공개하지 않습니다.
+- **telegram**: 텔레그램 명령·버튼을 수신합니다. 분석·설정·발송 기록은 같은 PostgreSQL을 사용합니다.
 
-```bash
-git --version
-docker --version
-docker compose version
-```
+worker 프로필과 새 systemd 타이머 설치는 제거했습니다. 기존 운영 서버는 일반 업데이트 버튼을 먼저 누르지 말고
+[SQLite → PostgreSQL 일회성 이전 절차](POSTGRES_MIGRATION.md)를 완료해야 합니다.
+이전 완료 표시가 없는 DB에서는 API/텔레그램 시작을 중단해 빈 DB로 운영되는 일을 방지합니다.
+기존 SQLite 원본·백업과 증권사 암호화 master.key는 보존합니다.
 
-### 1-1. 프로젝트와 환경변수 준비
+이전 후 업데이트는 대시보드의 Compose 업데이트를 사용합니다. CLI를 사용할 때도 컨테이너 라벨의
+전체 파일 순서(기존 override·관리 환경변수·compose.scheduler.yaml)를 유지합니다.
+api·telegram 이미지를 빌드한 뒤 db·api·telegram을 올리며, 정기 분석은 API 이미지에 포함됩니다.
 
-```bash
-mkdir -p ~/source
-cd ~/source
-git clone https://github.com/bluehawhy/stock-briefing.git
-cd stock-briefing
-cp .env.example .env
-chmod 600 .env
-mkdir -p ../stock-briefing-secrets
-chmod 700 ../stock-briefing-secrets
-nano .env
-```
-
-`.env`에서 다음 값을 본인 환경에 맞게 입력합니다. 텔레그램 봇 생성과 사용자 ID 확인, 선택 사항인 카카오 연결은 [봇 설정 안내](docs/bot-setup.md)를 참고하세요.
-
-| 변수 | 초기 설정 |
-| --- | --- |
-| `SQLITE_PATH` | `/data/stock-briefing.db` 유지 |
-| `TELEGRAM_BOT_TOKEN` | BotFather에서 발급받은 봇 토큰 |
-| `TELEGRAM_ALLOWED_USER_IDS` | 본인의 숫자 사용자 ID (정기 발송은 1명만 지정) |
-| `BROKER_SECRETS_DIR` | `../stock-briefing-secrets` |
-| `MASTER_KEY_FILE` | `/run/stock-briefing-secrets/master.key` |
-| `PUBLIC_BASE_URL` | 증권사 등록 화면을 제공할 본인의 HTTPS 주소 |
-| `KIS_ENVIRONMENT` | 실계좌 조회는 `live` |
-
-증권사 등록 화면을 사용하려면 HTTPS 프록시에 `/broker/register/*` 경로를 연결합니다. 카카오를 사용한다면 `/kakao/skill/*`도 연결합니다. [Caddy 설정 예시](deploy/Caddyfile.example)를 참고하고, 인증정보가 들어가는 등록 경로의 접근 로그는 기록하지 않도록 설정하세요. 공개 일봉을 사용하는 관심종목 브리핑에는 증권사 연결이 필요하지 않습니다.
-
-### 1-2. 이미지 빌드·암호화 키 생성·서비스 시작
-
-```bash
-cd ~/source/stock-briefing
-export BUILD_TIME="$(TZ=Asia/Seoul date '+%Y-%m-%dT%H:%M:%S%:z')"
-export BUILD_COMMIT="$(git rev-parse HEAD)"
-docker compose --profile job build api telegram worker
-```
-
-암호화 키는 최초 한 번만 생성합니다. 기존 `master.key`가 있으면 이 단계는 건너뜁니다.
-
-```bash
-docker compose --profile job run --rm -v "$(pwd)/../stock-briefing-secrets:/key-write" worker \
-  python -m app.cli create-master-key --file /key-write/master.key
-```
-
-텔레그램에서 봇에 `/start`를 보낸 뒤 사용자 ID를 아직 모른다면, 폴러를 시작하기 전에 아래 명령으로 확인하고 `.env`에 입력합니다.
-
-```bash
-docker compose run --rm telegram python -m app.cli inspect-telegram-id
-nano .env
-```
-
-환경변수 설정을 마친 뒤 서비스를 시작합니다.
-
-```bash
-docker compose up -d api telegram
-docker compose ps
-curl -fsS http://127.0.0.1:8000/healthz
-```
-
-키 파일은 DB와 분리해 보호·백업하고 Git에 올리지 않습니다. `.env`, DB·WAL 파일도 Git에 올리지 않습니다. 새 DB·백업 파일은 권한 600으로 생성합니다.
-
-### 1-3. 매일 08:30 정기 실행 등록
-
-아래 명령은 현재 설치 경로를 service에 반영합니다.
-
-```bash
-cd ~/source/stock-briefing
-sudo cp deploy/systemd/stock-briefing.service /etc/systemd/system/
-sudo cp deploy/systemd/stock-briefing.timer /etc/systemd/system/
-sudo sed -i "s|^WorkingDirectory=.*|WorkingDirectory=$(pwd)|" /etc/systemd/system/stock-briefing.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now stock-briefing.timer
-systemctl list-timers --all stock-briefing.timer
-```
-
-timer는 한국 시간 08:30에 worker를 실행합니다. 알림을 끄면 브리핑은 생성하고 정기 발송만 건너뜁니다. 종목·전략 등록은 아래 **첫 분석 설정**을 진행하세요.
-
-## 2. 초기 설정 완료 후 업데이트 (변경 배포 때마다)
-
-이미 `.env`, 암호화 키, 봇, timer를 설정한 서버에서는 아래 명령만 실행합니다. api·telegram뿐 아니라 정기 실행용 worker 이미지도 함께 갱신합니다.
-
-```bash
-cd ~/source/stock-briefing
-git pull --ff-only origin main
-export BUILD_TIME="$(TZ=Asia/Seoul date '+%Y-%m-%dT%H:%M:%S%:z')"
-export BUILD_COMMIT="$(git rev-parse HEAD)"
-docker compose --profile job build api telegram worker
-docker compose up -d api telegram
-```
-
-`BUILD_TIME`은 시간대가 포함된 ISO 형식으로 저장하며, 텔레그램에서는 한국 시간 `yyyy-mm-dd hh:mm:ss`로 표시합니다. `BUILD_COMMIT`은 현재 체크아웃한 커밋의 전체 ID입니다. 서버에서 새 코드를 적용하려면 위 이미지 빌드가 필요합니다.
-
-업데이트할 때 기존 `.env`와 `master.key`를 유지하세요. `.env.example`에 새 변수가 추가된 경우에만 해당 항목을 기존 `.env`에 추가합니다. DB 구조는 추가 방식으로 초기화되어 기존 설정·관심종목·브리핑·발송 기록을 보존합니다. 일반 코드 업데이트에는 timer 재등록이 필요하지 않습니다.
-
-### 업데이트 확인
-
-```bash
-docker compose ps
-curl -fsS http://127.0.0.1:8000/healthz
-docker compose logs --tail=50 api telegram
-systemctl list-timers --all stock-briefing.timer
-git rev-parse HEAD
-```
-
-텔레그램에서 다음 명령을 하나씩 보냅니다.
-
-- `버전`: 빌드시간과 빌드번호를 확인합니다. 빌드번호가 서버의 `git rev-parse HEAD` 결과와 일치해야 합니다.
-- `서비스 상태`: 최근 브리핑과 자동 발송 상태를 확인합니다.
-- `오늘 브리핑`: 최신 데이터를 확인해 당일 브리핑을 생성합니다.
-- `로그 보기 10분`: 방금 실행한 기능의 처리·분석 로그를 확인합니다.
+API는 08:30 이후 시작되면 당일 미발송분을 보완합니다. 자정 이전 당일만 보완하며 과거 날짜를 소급 발송하지 않습니다.
+PostgreSQL 세션 잠금과 기존 발송 예약을 함께 사용합니다. sent/pending/review_required가 있는 날은 자동 재발송하지 않습니다.
+알림 OFF 또는 아직 봇을 시작하지 않은 경우는 발송하지 않습니다. 기능을 켜거나 봇을 시작하면 다음 분 단위 확인에서 보완할 수 있습니다.
 
 ## 첫 분석 설정
 
@@ -150,18 +48,18 @@ git rev-parse HEAD
 1. 봇에 `증권사 연결 한국투자증권`을 보내고 일회용 HTTPS 화면에 키·시크릿·계좌번호를 입력합니다. 키는 암호화 저장됩니다. 이 단계는 토큰 발급만 검증하며, 계좌의 조회 권한은 추적 선택 후 첫 조회에서 검사합니다. 계좌 자동 열거 API를 가정하지 않으므로 각 계좌를 화면에서 등록합니다. 새 연결 등록은 기존 계좌 추적을 중지하므로 필요한 계좌를 다시 선택합니다.
 2. `추적 계좌 보기`로 마스킹된 계좌와 ID를 확인하고 `추적 계좌 추가 KIS-...` → `확인 코드`를 보냅니다. 미선택 계좌는 조회하지 않습니다. 계좌 연동을 쓰지 않는다면 `보유량 설정 005930 0`처럼 **0주도 명시적으로 확인**합니다.
 3. `관심종목 추가 005930 삼성전자`로 관심종목을 등록합니다. 추적 계좌 보유종목도 분석 대상에 포함됩니다. 종목명은 표시용이며 코드 유효성은 데이터 조회에서 확인합니다.
-4. `설정 도움말`을 보고 전체 전략 JSON을 `설정 변경 {JSON}`으로 보내고 확인합니다. 운영자 로컬 설정은 `python -m app.cli import-strategy --file strategy.json`도 지원합니다. JSON 파일을 컨테이너 `/data/strategy.json`에 놓으면 `docker compose --profile job run --rm worker python -m app.cli import-strategy --file /data/strategy.json`으로 등록할 수 있습니다. 변수와 규칙은 [docs/implementation.md](docs/implementation.md)에 정리했습니다.
+4. `설정 도움말`을 보고 전체 전략 JSON을 `설정 변경 {JSON}`으로 보내고 확인합니다. 운영자 로컬 설정은 `python -m app.cli import-strategy --file strategy.json`도 지원합니다. JSON 파일을 컨테이너 `/data/strategy.json`에 놓으면 `docker compose exec -T api python -m app.cli import-strategy --file /data/strategy.json`으로 등록할 수 있습니다. 변수와 규칙은 [docs/implementation.md](docs/implementation.md)에 정리했습니다.
 5. 텔레그램에서 `오늘 브리핑`을 입력하면 데이터를 갱신하고 새 결과를 바로 받습니다. 과거 저장 결과는 `브리핑 이력`으로 확인합니다. 데이터 수집량에 따라 응답까지 시간이 걸리며 카카오의 짧은 응답 제한에는 추가 콜백 연동이 필요합니다.
 
 직접 실행해서 DB 생성만 확인하려면:
 
 ```bash
-docker compose --profile job run --rm worker python -m app.cli generate-briefing
+docker compose exec -T api python -m app.cli generate-briefing
 # 당일 정기 발송 기록을 남기는 전체 실행:
-docker compose --profile job run --rm worker
+docker compose exec -T api python -m app.cli run-daily
 ```
 
-`send-test`, `inspect-telegram-id`, `save-briefing`, `send-briefing`은 기존 전달 경로 점검용으로 유지합니다. 수동으로 저장한 테스트 문구를 그대로 보내려면 `send-briefing`을 명시적으로 호출합니다. 기본 worker는 수동 문구 대신 새 브리핑을 생성합니다.
+`send-test`, `inspect-telegram-id`, `save-briefing`, `send-briefing`은 기존 전달 경로 점검용으로 유지합니다. 수동으로 저장한 테스트 문구를 그대로 보내려면 `send-briefing`을 명시적으로 호출합니다. run-daily는 수동 문구 대신 새 브리핑을 생성합니다.
 
 ## 텔레그램 로그 조회
 
@@ -170,7 +68,7 @@ docker compose --profile job run --rm worker
 - `로그 보기 09:05`: 오늘 한국 시간 09:05:00부터 09:05:59까지의 로그
 - `상태` 메뉴의 `로그 보기` 항목으로도 최근 3분을 바로 조회합니다.
 
-업데이트 후 실행한 API·텔레그램·정기 worker의 브리핑, 전략 검증, 텔레그램 polling 진단을 공통 DB에 기록합니다. 기존 Docker 표준 출력 로그를 소급해서 읽지는 않습니다. HTTP 요청 URL이나 인증정보가 포함될 수 있는 외부 라이브러리 로그는 저장하지 않으며, 기존 허용 사용자·개인 대화 제한을 그대로 적용합니다. 로그는 7일 보관하고, 조회량이 많으면 최신 최대 200건·약 24,000자만 표시합니다. 더 좁은 시간으로 다시 조회할 수 있습니다. 텔레그램에서는 긴 응답을 여러 메시지로 나눠 전송합니다.
+업데이트 후 실행한 API·텔레그램·API 정기 스케줄러의 브리핑, 전략 검증, 텔레그램 polling 진단을 공통 DB에 기록합니다. 기존 Docker 표준 출력 로그를 소급해서 읽지는 않습니다. HTTP 요청 URL이나 인증정보가 포함될 수 있는 외부 라이브러리 로그는 저장하지 않으며, 기존 허용 사용자·개인 대화 제한을 그대로 적용합니다. 로그는 7일 보관하고, 조회량이 많으면 최신 최대 200건·약 24,000자만 표시합니다. 더 좁은 시간으로 다시 조회할 수 있습니다. 텔레그램에서는 긴 응답을 여러 메시지로 나눠 전송합니다.
 
 기능별 진단 로그는 명령 처리·권한 거부·중복 처리, 설정 확인/적용,
 증권사 연결/인증, 일봉/수급/잔고 수집, 지표·점수 판단, 수량 산정,
@@ -192,17 +90,12 @@ Uvicorn 오류도 같은 `로그 보기` 명령으로 조회합니다. traceback
 
 ## 운영·백업
 
-```bash
-docker compose ps
-docker compose logs --since=30m api telegram
-systemctl list-timers stock-briefing.timer
-# 실행 중에도 SQLite backup API로 일관된 스냅샷 생성 (새 경로만 허용)
-docker compose --profile job run --rm worker python -m app.cli backup --file /data/stock-briefing.db.backup-YYYYMMDD
-```
+API의 시작 로그에서 Daily scheduler started와 day/result 기록을 확인합니다.
+정기 발송 기록은 PostgreSQL delivery_runs에 저장됩니다. pending 또는 review_required는 실제 텔레그램 대화 확인 후 운영자가 판단해야 하며 자동 삭제·재전송하지 않습니다.
 
-복원은 `api`·`telegram`과 정기 worker를 모두 중지한 상태에서 원본 DB를 따로 보관하고 WAL/SHM을 정리한 다음 백업 파일을 `stock-briefing.db`로 복사하여 권한 600으로 설정합니다. 암호화 키는 DB 백업과 별도로 보호·백업해야 하며, 키가 없으면 저장된 증권사 인증정보를 복호화할 수 없습니다.
-
-발송이 일부 메시지만 성공했거나 응답을 받기 전 연결이 끊기면 `review_required`로 기록하며 자동 재전송하지 않습니다. worker가 발송 예약 후 종료되어 `pending`이 남아도 재전송하지 않습니다. 실제 텔레그램 대화와 DB의 발송 기록을 확인한 후에만 운영자가 재처리해야 합니다. 서버가 08:30에 꺼져 있었다면 persistent timer가 나중에 실행하고, 실행 당시 한국 날짜의 전 거래일 종가를 기준으로 생성합니다.
+PostgreSQL 백업·복원과 장애 시 전환 절차는 [이전 문서](POSTGRES_MIGRATION.md)를 따릅니다.
+DB 백업과 별도로 master.key를 보호해야 저장된 증권사 인증정보를 복호화할 수 있습니다.
+SQLite 백업 명령은 기존 SQLite 모드에서만 사용할 수 있습니다.
 
 ## 테스트
 
@@ -280,7 +173,7 @@ Python 3.13에서 지표·수량·설정·증분 수집·휴장·데이터 누�
 
 ## 개인용 웹 대시보드
 
-기존 FastAPI 서버의 `/stock-briefing/`에서 휴대폰과 PC용 대시보드를 제공합니다. 별도 프런트엔드 빌드나 DB 이전 없이 텔레그램과 같은 SQLite DB를 사용합니다.
+기존 FastAPI 서버의 `/stock-briefing/`에서 휴대폰과 PC용 대시보드를 제공합니다. 별도 프런트엔드 빌드나 DB 이전 없이 텔레그램과 같은 PostgreSQL DB를 사용합니다.
 
 - 대시보드: 저장된 전체 브리핑, 관심종목 수, 코스피 추세·기준일, 갱신 진행 상태
 - 관심종목: 종목명 전체 또는 영문·숫자 6자리 코드로 추가, 종가·전일 등락률·판단 기준일 확인, 확인창 후 제거
@@ -296,3 +189,4 @@ Python 3.13에서 지표·수량·설정·증분 수집·휴장·데이터 누�
 
 비밀번호가 없거나 12자 미만이면 웹 화면과 API는 404로 비활성화됩니다. `DASHBOARD_ALLOW_HTTP_PRIVATE=1`은 사설 IP에서 HTTP를 허용합니다. 별도 Caddy 포트 `8081`은 기본 웹 포트 `80/443`을 사용하는 가계부 사이트와 겹치지 않도록 분리했습니다. 대시보드는 단일 운영자용으로 사용자별 데이터 분리를 제공하지 않습니다. 로그인은 HttpOnly·SameSite=Strict 쿠키로 12시간 유지되며 HTTPS에서는 Secure 속성을 적용합니다. 로그아웃 버튼은 현재 브라우저의 쿠키를 삭제합니다. 아이디 또는 비밀번호를 바꾸고 컨테이너를 다시 생성하면 기존 로그인 쿠키도 무효화됩니다. 로그인 실패는 접속 IP당 5분 동안 10회로 제한합니다(프로세스별 제한이며, 프록시 설정에 따라 여러 기기가 같은 IP로 집계될 수 있습니다). 비밀번호를 잊었다면 서버의 `.env`에서 `DASHBOARD_PASSWORD`를 확인하거나 새 값으로 변경한 뒤 api 컨테이너를 다시 생성하세요.
 모든 화면·API 응답은 캐시를 금지하고, 외부 스크립트·폰트 없이 정적 파일을 함께 제공합니다. 데이터는 텍스트로 렌더링하고 변경 요청은 같은 출처의 전용 헤더를 요구합니다. 증권사 비밀 키·계좌번호·원본 서버 로그는 웹 API 응답에 포함하지 않습니다. 관심종목 변경은 기존 수집 잠금과 감사 로그를 사용합니다. 종목코드만 입력하면 이름은 코드로 표시되며 유효성은 브리핑 갱신 시 확인됩니다. 종목명 조회 실패·중복 시 코드를 요청합니다. 저장된 의견은 갱신 전까지 과거 데이터이며 종목별 기준일을 확인해야 합니다.
+
