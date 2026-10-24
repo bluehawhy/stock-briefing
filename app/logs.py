@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import asyncio
+from contextvars import copy_context
 import sys
 import threading
 from pathlib import Path
@@ -69,8 +71,41 @@ class StoredLogHandler(logging.Handler):
     def __init__(self, store):
         super().__init__(logging.INFO)
         self.store = store
+        self._pending = threading.BoundedSemaphore(64)
+
+    def handle(self, record):
+        # Handler.handle normally holds its lock through emit. A synchronous
+        # writer must not hold that lock while the event loop submits a log.
+        # Each write owns its DB connection; the only shared state is the
+        # thread-safe bounded semaphore.
+        filtered = self.filter(record)
+        if not filtered:
+            return False
+        self.emit(filtered if isinstance(filtered, logging.LogRecord) else record)
+        return True
 
     def emit(self, record):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._persist(record)
+            return
+        # Logging on an event-loop thread must never wait for the database.
+        # Best-effort diagnostics have a bounded backlog during DB outages.
+        if not self._pending.acquire(blocking=False):
+            return
+        context = copy_context()
+        def persist():
+            try:
+                context.run(self._persist, record)
+            finally:
+                self._pending.release()
+        try:
+            loop.run_in_executor(None, persist)
+        except RuntimeError:
+            self._pending.release()
+
+    def _persist(self, record):
         prefixes = SAFE_PREFIXES.get(record.name, ())
         safe_message = isinstance(record.msg, str) and record.msg.startswith(prefixes)
         if not safe_message and record.levelno < logging.ERROR:
