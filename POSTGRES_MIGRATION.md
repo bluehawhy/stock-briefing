@@ -115,3 +115,6 @@ broker secret 디렉터리와 DB password bind 경로를 실행 중 API의 secre
 비교합니다. 경로가 바뀌면 새 암호 생성·서비스 중지·재생성 전에 차단합니다.
 secret 디렉터리를 의도적으로 옮길 때는 이 검사를 우회하지 말고 별도로 이전합니다.
 파일 경로만 복원하며 기존 컨테이너의 환경변수 전체나 secret 내용은 출력하지 않습니다.
+
+# 참고: 이 문서는 기존 SQLite에서 기존 Compose PostgreSQL로의 이전 기록입니다.
+# Blue Waikiki 신규 프로젝트로 기존 PostgreSQL을 이전할 때는 README의 신규 프로젝트 절차를 따르세요.

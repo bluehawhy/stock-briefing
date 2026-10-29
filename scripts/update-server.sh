@@ -21,8 +21,13 @@ BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')"
 source scripts/compose-context.sh
 load_compose_context "$@"
 validate_compose_context
-"${compose[@]}" build api telegram
-"${compose[@]}" up -d db api telegram
+"${compose[@]}" build api
+# Require the old poller to be stopped before enabling the integrated one.
+if docker ps --filter "label=com.docker.compose.project=${deployment[0]}" --filter 'label=com.docker.compose.service=telegram' --format '{{.ID}}' | grep -q .; then
+  echo 'Stop the old standalone Telegram container before updating.' >&2
+  exit 1
+fi
+"${compose[@]}" up -d --remove-orphans db api
 "${compose[@]}" ps
 "${compose[@]}" exec -T api python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/healthz").read().decode())'
 printf '\n업데이트 완료. 텔레그램에서 버전을 입력하세요.\n'

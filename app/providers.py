@@ -25,6 +25,12 @@ class MarketProvider(Protocol):
 
 class Vault:
     def __init__(self, settings: Settings):
+        if settings.master_key:
+            try:
+                self.cipher = Fernet(settings.master_key.encode())
+            except ValueError:
+                raise DataError("MASTER_KEY 형식이 올바르지 않습니다.") from None
+            return
         if not settings.master_key_file:
             raise DataError("MASTER_KEY_FILE 설정이 필요합니다.")
         try:
@@ -138,7 +144,7 @@ class KisProvider:
             )
         try:
             cache = self.store.get("credentials", "kis-token")
-            if cache and self.settings.master_key_file:
+            if cache and (self.settings.master_key_file or self.settings.master_key):
                 saved = Vault(self.settings).open(cache)
                 if (
                     saved.get("app_key") == self.credentials["app_key"]
@@ -169,7 +175,7 @@ class KisProvider:
             expiry = (
                 datetime.now(timezone.utc) + timedelta(seconds=lifetime)
             ).isoformat()
-            if self.settings.master_key_file:
+            if self.settings.master_key_file or self.settings.master_key:
                 self.store.put(
                     "credentials",
                     "kis-token",

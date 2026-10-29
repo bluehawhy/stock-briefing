@@ -20,7 +20,7 @@ configuration=$("${compose[@]}" config --format json)
 secret_path=$(printf '%s' "$configuration" | python3 -c '
 import json,sys
 c=json.load(sys.stdin)
-for name in ("api", "telegram"):
+for name in ("api",):
     if c["services"][name]["environment"].get("STOCK_DATABASE_BACKEND") != "postgres":
         raise SystemExit("An override is masking the PostgreSQL backend")
 for v in c["services"]["db"]["volumes"]:
@@ -40,7 +40,7 @@ fi
 export BUILD_TIME BUILD_COMMIT
 BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')
 BUILD_COMMIT=$(git rev-parse HEAD)
-"${compose[@]}" build api telegram
+"${compose[@]}" build api
 "${compose[@]}" up -d db
 for attempt in {1..60}; do
     if "${compose[@]}" exec -T db pg_isready -U stock_briefing -d stock_briefing >/dev/null 2>&1; then break; fi
@@ -54,7 +54,12 @@ if systemctl is-active --quiet stock-briefing.service; then
     echo 'Daily briefing is running. Wait for it to finish, then rerun this script.'
     exit 1
 fi
-"${compose[@]}" stop api telegram
+# An old standalone Telegram container must already be stopped before migration.
+if docker ps --filter "label=com.docker.compose.project=${deployment[0]}" --filter 'label=com.docker.compose.service=telegram' --format '{{.ID}}' | grep -q .; then
+    echo 'Stop the old standalone Telegram container before continuing.' >&2
+    exit 1
+fi
+"${compose[@]}" stop api
 
 backup="$(dirname "${deployment[3]}")/stock-before-postgres-$(date +%Y%m%d-%H%M%S).db"
 python3 - "${deployment[3]}" "$backup" <<'PY'
@@ -88,7 +93,7 @@ services:
     environment:
       DAILY_SCHEDULER_ENABLED: "1"
 YAML
-"${compose[@]}" --file "$activation" up -d --no-build api telegram
+"${compose[@]}" --file "$activation" up -d --no-build --remove-orphans api
 echo 'Migration verified. API daily scheduler enabled at 08:30 Asia/Seoul.'
 echo 'Use the complete Compose file list (including compose.scheduler.yaml) for future updates.'
 echo 'After 08:30, a not-yet-sent briefing may be generated and sent on API startup.'

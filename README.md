@@ -18,11 +18,10 @@
 
 **실계좌 API 키/권한 검증과 투자 전략·예산 설정은 운영자 설정이 필요합니다.** 임의의 투자 기간·가중치·예산을 자동 기본값으로 적용하지 않습니다. 미래에셋 국내주식 API는 확인된 명세·개인 이용 권한이 없어 지원 불가 상태를 안내하는 어댑터만 제공합니다. 모의 KIS 환경은 일정·수급 지원이 확인되지 않으면 분석을 보류합니다.
 
-## 운영 구성: API · PostgreSQL · 텔레그램
+## 운영 구성: API · PostgreSQL
 
-- **api**: 웹/API, 갱신 큐, 매일 08:30 Asia/Seoul 정기 분석·발송을 담당합니다.
+- **api**: 웹/API, 텔레그램 명령·버튼 수신, 갱신 큐, 매일 08:30 Asia/Seoul 정기 분석·발송을 담당합니다.
 - **db**: PostgreSQL 전용 컨테이너와 영속 볼륨입니다. 호스트 포트는 공개하지 않습니다.
-- **telegram**: 텔레그램 명령·버튼을 수신합니다. 분석·설정·발송 기록은 같은 PostgreSQL을 사용합니다.
 
 worker 프로필과 새 systemd 타이머 설치는 제거했습니다. 기존 운영 서버는 일반 업데이트 버튼을 먼저 누르지 말고
 [SQLite → PostgreSQL 일회성 이전 절차](POSTGRES_MIGRATION.md)를 완료해야 합니다.
@@ -31,7 +30,17 @@ worker 프로필과 새 systemd 타이머 설치는 제거했습니다. 기존 �
 
 이전 후 업데이트는 대시보드의 Compose 업데이트를 사용합니다. CLI를 사용할 때도 컨테이너 라벨의
 전체 파일 순서(기존 override·관리 환경변수·compose.scheduler.yaml)를 유지합니다.
-api·telegram 이미지를 빌드한 뒤 db·api·telegram을 올리며, 정기 분석은 API 이미지에 포함됩니다.
+기존 독립 텔레그램 컨테이너를 먼저 중지한 후 API를 교체하세요. 같은 봇을 동시에 폴링하면 충돌합니다.
+API는 한 인스턴스와 한 Uvicorn worker로 실행합니다.
+
+## Blue Waikiki 신규 프로젝트로 이전
+
+프로젝트에서 저장소를 연결하고 Dockerfile Function의 앱 포트를 8000으로 설정합니다.
+프로젝트 Database의 `DATABASE_URL`은 배포 시 자동 주입되며 PostgreSQL을 선택합니다.
+실행 환경에 `TELEGRAM_POLLING_ENABLED=1`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_IDS`와 기존 설정을 등록합니다.
+정기 발송을 사용하면 `DAILY_SCHEDULER_ENABLED=1`도 설정합니다. `MASTER_KEY`는 기존 master.key의 동일한 값을 시크릿으로 등록하세요. 키가 바뀌면 기존 암호화 데이터를 읽을 수 없습니다. 다른 비밀값도 시크릿으로 등록합니다.
+
+기존 PostgreSQL을 일관된 백업으로 보존하고 새 프로젝트 DB에 복원해야 합니다. 쓰기를 중지한 뒤 기존 데이터와 `database_metadata`의 이전 완료 표시를 포함해 복원하고, 행 수와 연결을 확인하세요. 빈 DB에는 시작을 막는 보호 장치가 있습니다. 기존 API와 텔레그램을 중지한 뒤 새 Function을 배포하고 `/healthz`, 텔레그램 수신, 발송 설정과 외부 라우팅을 확인하세요. 새 배포가 확인되기 전에는 기존 데이터와 설정을 삭제하지 마세요. 이 과정은 DB 자동 이전이나 외부 도메인 연결을 수행하지 않습니다.
 
 API는 08:30 이후 시작되면 당일 미발송분을 보완합니다. 자정 이전 당일만 보완하며 과거 날짜를 소급 발송하지 않습니다.
 PostgreSQL 세션 잠금과 기존 발송 예약을 함께 사용합니다. sent/pending/review_required가 있는 날은 자동 재발송하지 않습니다.
