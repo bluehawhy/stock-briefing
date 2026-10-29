@@ -21,6 +21,7 @@ class Settings:
     kis_app_key: str = ""
     kis_app_secret: str = ""
     kis_environment: str = "live"
+    master_key: str = ""
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -35,4 +36,5 @@ class Settings:
             kis_app_key=os.getenv("KIS_APP_KEY", ""),
             kis_app_secret=os.getenv("KIS_APP_SECRET", ""),
             kis_environment=os.getenv("KIS_ENVIRONMENT", "live"),
+            master_key=os.getenv("MASTER_KEY", ""),
         )

@@ -52,7 +52,7 @@ def context(container, root, env_files):
 def validate(configuration, secret_directory):
     expected = Path(secret_directory).resolve()
     services = configuration['services']
-    for name in ('api', 'telegram'):
+    for name in ('api',):
         mounts = services[name].get('volumes', [])
         mount = next((m for m in mounts if m['target'] == SECRET_TARGET), None)
         if not mount or mount.get('type') != 'bind' or Path(mount['source']).resolve() != expected:

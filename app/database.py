@@ -7,11 +7,15 @@ import re
 
 def database_options():
     password_file = os.getenv('POSTGRES_PASSWORD_FILE', '')
-    backend = os.getenv('STOCK_DATABASE_BACKEND', 'sqlite')
+    url = os.getenv('DATABASE_URL', '')
+    backend = os.getenv('STOCK_DATABASE_BACKEND', 'postgres' if url else 'sqlite')
     if backend == 'sqlite':
         return None
     if backend != 'postgres':
         raise RuntimeError('Unsupported STOCK_DATABASE_BACKEND')
+    if url:
+        return dict(conninfo=url, connect_timeout=10,
+                    options='-c statement_timeout=30000 -c lock_timeout=10000')
     if not password_file:
         raise RuntimeError('POSTGRES_PASSWORD_FILE is required')
     password = Path(password_file).read_text().strip()
