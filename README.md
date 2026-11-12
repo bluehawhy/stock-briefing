@@ -6,7 +6,7 @@
 
 한국·미국의 **기준금리·국채금리·헤드라인/근원 소비자물가**를 각각 수집하고, 공통 **WTI·브렌트유와 원/달러 환율**을 함께 해설하는 확장을 설계했습니다. 한국은 ECOS·KOSIS, 미국과 국제유가는 FRED를 우선하며, 데이터 기준일·발표일·수집일을 구분해 기존 08:30 텔레그램 브리핑에 별도 절로 표시하는 방향입니다. **현재는 문서 설계만 완료했으며 코드·DB·발송 기능에는 미반영입니다.**
 
-상세 설계: [한·미 거시경제 지표 수집·분석](docs/macro-indicators-design.md) · 연구 배경: [공포탐욕지수 영상 요약](docs/research/fear-greed-2026-video-summary.md)
+상세 설계: [한·미 거시경제 지표 수집·분석](docs/macro-indicators-design.md) · [API 명세 및 연동 계획](docs/api.md) · [DB 현황·확장 모델](docs/database.md) · 연구 배경: [공포탐욕지수 영상 요약](docs/research/fear-greed-2026-video-summary.md)
 
 ## 구현 범위
 
