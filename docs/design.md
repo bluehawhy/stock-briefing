@@ -1,5 +1,7 @@
 # 국내주식 매매 제안 브리핑 서비스 설계서
 
+> **추가 계획(미구현):** 한국·미국의 금리·물가, 국제유가, 원/달러 환율을 다루는 최신 확장 설계는 [거시경제 지표 수집·분석 설계서](macro-indicators-design.md)를 참조한다. 본 문서는 기존 국내주식 브리핑 초기 설계 기록이다.
+
 - 문서 상태: 초기 설계 초안. 2026-10-07 실제 구현·지원 제한은 [implementation.md](implementation.md) 참조
 - 대상 저장소: `bluehawhy/stock-briefing`
 - 구현 언어: Python
