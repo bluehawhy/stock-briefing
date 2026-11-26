@@ -55,15 +55,6 @@ class Store:
                     chat_id TEXT NOT NULL UNIQUE,
                     updated_at TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS dashboard_accounts (
-                    user_id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL, password_salt TEXT NOT NULL,
-                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS dashboard_registrations (
-                    token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL,
-                    expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0
-                );
                 CREATE TABLE IF NOT EXISTS poll_state (
                     bot TEXT PRIMARY KEY,
                     next_update_id INTEGER NOT NULL
@@ -490,10 +481,17 @@ class Store:
                 (offset,),
             )
 
-    def save_briefing(self, day: date, body: str) -> None:
+    def save_briefing(self, day: date, body: str, user_id: str | None = None) -> None:
         if not body.strip():
             raise ValueError("Briefing body must not be empty")
         self.init()
+        if user_id is not None:
+            self.put_for_user(
+                "briefings", day.isoformat(),
+                {"day": day.isoformat(), "body": body, "created_at": _now()},
+                str(user_id),
+            )
+            return
         with self.connect() as db:
             db.execute(
                 """INSERT INTO briefings VALUES (?, ?, ?)
@@ -502,8 +500,19 @@ class Store:
                 (day.isoformat(), body, _now()),
             )
 
-    def briefing(self, day: date | None = None) -> tuple[str, str] | None:
+    def briefing(self, day: date | None = None, user_id: str | None = None) -> tuple[str, str] | None:
         self.init()
+        if user_id is not None:
+            records = self.items_for_user("briefings", str(user_id))
+            if day is not None:
+                record = dict(records).get(day.isoformat())
+                if record:
+                    return record.get("day", day.isoformat()), record["body"]
+            elif records:
+                key, record = max(records, key=lambda pair: pair[0])
+                return record.get("day", key), record["body"]
+            if not self._sole_registered_user(str(user_id)):
+                return None
         with self.connect() as db:
             if day is None:
                 row = db.execute(
@@ -515,6 +524,20 @@ class Store:
                     (day.isoformat(),),
                 ).fetchone()
             return (row[0], row[1]) if row else None
+
+    def briefing_history(self, user_id: str, before: date | None = None, limit: int = 31):
+        records = self.items_for_user("briefings", str(user_id))
+        cutoff = before.isoformat() if before else "9999-12-31"
+        result = [(r.get("day", key), r.get("created_at", "")) for key, r in records
+                  if key < cutoff]
+        if not result and self._sole_registered_user(str(user_id)):
+            with self.connect() as db:
+                rows = db.execute(
+                    "SELECT briefing_date,created_at FROM briefings WHERE briefing_date<? ORDER BY briefing_date DESC LIMIT ?",
+                    (cutoff, limit),
+                ).fetchall()
+            result = [(r[0], r[1]) for r in rows]
+        return sorted(result, reverse=True)[:limit]
 
     def last_delivery(self) -> tuple[str, str] | None:
         self.init()
