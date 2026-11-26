@@ -141,24 +141,43 @@ class Store:
             raise ValueError("user_id is required for user-scoped records")
         return f"user:{user_id}:{key}"
 
+    def _sole_registered_user(self, user_id: str) -> bool:
+        self.init()
+        with self.connect() as db:
+            rows = db.execute("SELECT user_id FROM telegram_recipients").fetchall()
+        return len(rows) == 1 and str(rows[0][0]) == str(user_id)
+
     def get_for_user(self, kind: str, key: str, user_id: str, default=None):
         user_id = str(user_id)
         scoped = self.get(kind, self.user_key(user_id, key))
         if scoped is not None:
             return scoped if isinstance(scoped, dict) and scoped.get("user_id") == user_id else default
         legacy = self.get(kind, key)
-        return legacy if isinstance(legacy, dict) and legacy.get("user_id") == user_id else default
+        if not isinstance(legacy, dict):
+            return default
+        owner = legacy.get("user_id")
+        if owner == user_id or (owner is None and self._sole_registered_user(user_id)):
+            return legacy
+        return default
 
     def items_for_user(self, kind: str, user_id: str) -> list[tuple[str, dict]]:
         user_id = str(user_id)
         prefix = self.user_key(user_id, "")
-        result = []
-        for key, value in self.items(kind):
-            if not isinstance(value, dict) or value.get("user_id") != user_id:
+        rows = self.items(kind)
+        allow_legacy = any(
+            isinstance(value, dict) and value.get("user_id") is None and not key.startswith("user:")
+            for key, value in rows
+        ) and self._sole_registered_user(user_id)
+        result = {}
+        for key, value in rows:
+            if not isinstance(value, dict):
+                continue
+            owner = value.get("user_id")
+            if owner != user_id and not (owner is None and allow_legacy and not key.startswith("user:")):
                 continue
             item_key = key[len(prefix):] if key.startswith(prefix) else key
-            result.append((item_key, value))
-        return result
+            result[item_key] = value
+        return sorted(result.items())
 
     @staticmethod
     def put_for_user_in(db, kind: str, key: str, value: dict, user_id: str) -> None:
