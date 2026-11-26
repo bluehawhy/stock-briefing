@@ -177,9 +177,9 @@ class BotService:
                 + f"\n확인 시각: {datetime.now(KST):%Y-%m-%d %H:%M} KST"
             )
         if command == "연동 상태":
-            state = self.store.get("provider_status", "kis", {})
+            state = self.store.get_for_user("provider_status", "kis", m.user_id, {})
             tracked = [
-                key for key, a in self.store.items("accounts") if a.get("tracked")
+                key for key, a in self.store.items_for_user("accounts", m.user_id) if a.get("tracked")
             ]
             data = self.store.get("data_status", "latest", {})
             complete_data = self.store.get("data_status", "last_complete", {})
@@ -213,12 +213,12 @@ class BotService:
                 return f"관심종목 제거: {symbol}. 과거 데이터·모의 기록은 보관합니다."
         if command in {"보유종목", "보유량"}:
             tracked = [
-                (k, a) for k, a in self.store.items("accounts") if a.get("tracked")
+                (k, a) for k, a in self.store.items_for_user("accounts", m.user_id) if a.get("tracked")
             ]
             rows = []
             if tracked:
                 for key, _ in tracked:
-                    snapshot = self.store.get("holdings", key)
+                    snapshot = self.store.get_for_user("holdings", key, m.user_id)
                     rows.append(
                         key
                         + ": "
@@ -231,7 +231,7 @@ class BotService:
             else:
                 rows = [
                     f"{k}: {v['quantity']}주 / 수동 기준 {v['at']}"
-                    for k, v in self.store.items("manual_holdings")
+                    for k, v in self.store.items_for_user("manual_holdings", m.user_id)
                 ]
             return "보유량:\n" + (
                 "\n".join(rows) or "미등록 (0주도 명시적으로 설정 필요)"
@@ -255,7 +255,7 @@ class BotService:
                 for kind, title in (("proposals", "보유종목 제안"),
                                     ("watch_proposals", "관심종목 의견")):
                     record = (self.store.get_for_user(kind, symbol, m.user_id)
-                              if kind == "watch_proposals" else self.store.get(kind, symbol))
+                              if kind == "watch_proposals" else self.store.get_for_user(kind, symbol, m.user_id))
                     if not record:
                         continue
                     if "indicators" not in record:
@@ -269,9 +269,9 @@ class BotService:
                     sections.append(f"[{title}]\n{body}\n생성 {record.get('at', '확인 불가')}")
                 return "\n\n".join(sections) or "저장된 제안이 없습니다. '오늘 브리핑'을 실행한 뒤 다시 선택하세요."
             records = (
-                self.store.items("proposals")
+                self.store.items_for_user("proposals", m.user_id)
                 if len(parts) == 2
-                else [(symbol_code(parts[2]), self.store.get("proposals", parts[2]))]
+                else [(symbol_code(parts[2]), self.store.get_for_user("proposals", parts[2], m.user_id))]
             )
             from app.briefings import BriefingEngine
 
@@ -302,7 +302,7 @@ class BotService:
             return "계좌:\n" + (
                 "\n".join(
                     f"{k}: ****{a['number'][-4:]}-{a['product']} / 추적 {'ON' if a.get('tracked') else 'OFF'}"
-                    for k, a in self.store.items("accounts")
+                    for k, a in self.store.items_for_user("accounts", m.user_id)
                 )
                 or "등록 없음. 증권사 연결 화면에서 계좌를 등록하세요."
             )
@@ -311,7 +311,7 @@ class BotService:
             and parts[:2] == ["추적", "계좌"]
             and parts[2] in {"추가", "제거"}
         ):
-            if not self.store.get("accounts", parts[3]):
+            if not self.store.get_for_user("accounts", parts[3], m.user_id):
                 return "등록된 계좌 ID를 사용하세요. '추적 계좌 보기'로 확인하세요."
             return self._proposal(
                 m,
@@ -322,18 +322,18 @@ class BotService:
         if command == "설정 보기":
             return (
                 json.dumps(
-                    self.store.get("settings", "strategy", {}),
+                    self.store.get_for_user("settings", "strategy", m.user_id, {}),
                     ensure_ascii=False,
                     indent=2,
                 )
                 + "\n안전 한도: "
                 + json.dumps(
-                    self.store.get("settings", "order_limits", {}), ensure_ascii=False
+                    self.store.get_for_user("settings", "order_limits", m.user_id, {}), ensure_ascii=False
                 )
                 + "\n정기 알림: "
                 + (
                     "ON"
-                    if self.store.get("settings", "notifications", {"enabled": True})[
+                    if self.store.get_for_user("settings", "notifications", m.user_id, {"enabled": True})[
                         "enabled"
                     ]
                     else "OFF"
@@ -357,7 +357,7 @@ class BotService:
             changes = json.loads(command[len("설정 변경 ") :])
             if not isinstance(changes, dict):
                 raise DataError("JSON 객체 필요")
-            previous = self.store.get("settings", "strategy", {})
+            previous = self.store.get_for_user("settings", "strategy", m.user_id, {})
             strategy = Strategy.parse(previous | changes)
             return self._proposal(
                 m,
@@ -400,8 +400,8 @@ class BotService:
                 "주문 한도 변경: " + json.dumps(parsed, ensure_ascii=False),
             )
         if command == "모의 운용 기록":
-            evaluations = self.store.items("evaluations")
-            total = len(self.store.items("recommendations"))
+            evaluations = self.store.items_for_user("evaluations", m.user_id)
+            total = len(self.store.items_for_user("recommendations", m.user_id))
             header = f"모의 평가: {len(evaluations)}건 / 미평가 {total - len(evaluations)}건\n"
             if evaluations:
                 header += f"비용 반영 양의 손익 비율: {sum(v['hit'] for _, v in evaluations) / len(evaluations):.1%}\n"
@@ -424,16 +424,16 @@ class BotService:
         if parts[:2] == ["주문", "요청"]:
             return self._order_preview(m, parts)
         if len(parts) == 3 and parts[:2] == ["주문", "확인"]:
-            return self.store.apply_confirmation(m, parts[2], self._apply)
+            return self.store.apply_confirmation(m, parts[2], lambda db, action, payload: self._apply(db, action, payload, m.user_id))
         if command.startswith(("주문 정정", "주문 취소")):
             return "현재 조회용 API 어댑터는 주문 정정·취소를 지원하지 않습니다. 증권사 앱에서 확인하세요."
         if command == "주문 상태":
-            stopped = self.store.get("order_stop", today.isoformat(), {}).get(
+            stopped = self.store.get_for_user("order_stop", today.isoformat(), m.user_id, {}).get(
                 "stopped", False
             )
             return f"실제 주문 비활성 / 당일 중지 {'ON' if stopped else 'OFF'} / 서버 제출 이력 없음"
         if len(parts) == 2 and parts[0] == "확인":
-            return self.store.apply_confirmation(m, parts[1], self._apply)
+            return self.store.apply_confirmation(m, parts[1], lambda db, action, payload: self._apply(db, action, payload, m.user_id))
         return (
             "지원하지 않는 명령입니다. '도움말'을 입력해 사용 가능한 명령을 확인하세요."
         )
@@ -449,9 +449,7 @@ class BotService:
             ).fetchone():
                 raise DataError("데이터 갱신 중입니다. 완료 후 관심종목을 변경하세요.")
             if value is None:
-                db.execute(
-                    Store.delete_for_user_in(db, "watchlist", symbol, user_id)
-                )
+                Store.delete_for_user_in(db, "watchlist", symbol, user_id)
             else:
                 Store.put_for_user_in(db, "watchlist", symbol, value, user_id)
                 if value["name"] != symbol:
@@ -462,7 +460,7 @@ class BotService:
     def _order_preview(self, m, parts):
         if len(parts) != 7 or parts[3] not in {"매수", "매도"}:
             return "사용법: 주문 요청 계좌ID 매수|매도 종목코드 수량 지정가격"
-        account = self.store.get("accounts", parts[2])
+        account = self.store.get_for_user("accounts", parts[2], m.user_id)
         if not account or not account.get("tracked"):
             return "추적 중인 계좌 ID가 필요합니다."
         symbol, quantity, price = (
@@ -472,7 +470,7 @@ class BotService:
         )
         if not quantity or not price:
             raise DataError("수량·가격은 0 초과")
-        limits = self.store.get("settings", "order_limits")
+        limits = self.store.get_for_user("settings", "order_limits", m.user_id)
         if not limits:
             return "주문 안전 한도를 먼저 설정하세요. 실제 주문 제출은 비활성입니다."
         categories = {"관심종목", "보유종목", "보유량", "제안", "증권사", "추적",
@@ -481,7 +479,7 @@ class BotService:
         feature_event("command.route", "selected",
                       category=parts[0] if parts and parts[0] in categories else "other")
         today = datetime.now(KST).date().isoformat()
-        if self.store.get("order_stop", today, {}).get("stopped"):
+        if self.store.get_for_user("order_stop", today, m.user_id, {}).get("stopped"):
             return "당일 주문 중지 상태입니다."
         if quantity * price > min(limits["symbol_amount"], limits["daily_amount"]):
             return "설정한 주문 금액 한도를 초과합니다."
@@ -501,7 +499,7 @@ class BotService:
         )
 
     @traced("services._apply")
-    def _apply(self, db, action, payload):
+    def _apply(self, db, action, payload, user_id):
         feature_event("settings.apply", "selected", action=action)
         if action == "order_disabled":
             return "실제 주문 제출이 비활성입니다. 주문 API를 호출하지 않았습니다."
@@ -515,37 +513,44 @@ class BotService:
                 )
         if action == "strategy":
             Strategy.parse(payload)
-            Store.put_in(db, "settings", "strategy", payload)
+            Store.put_for_user_in(db, "settings", "strategy", payload, user_id)
         elif action in {"notifications", "order_limits"}:
-            Store.put_in(db, "settings", action, payload)
+            Store.put_for_user_in(db, "settings", action, payload, user_id)
         elif action == "manual_holding":
-            Store.put_in(
-                db,
-                "manual_holdings",
-                payload["symbol"],
-                {
-                    "quantity": payload["quantity"],
-                    "at": datetime.now(timezone.utc).isoformat(),
-                },
+            Store.put_for_user_in(
+                db, "manual_holdings", payload["symbol"],
+                {"quantity": payload["quantity"], "at": datetime.now(timezone.utc).isoformat()},
+                user_id,
             )
         elif action == "tracking":
             row = db.execute(
                 "SELECT value FROM records WHERE kind='accounts' AND key=?",
-                (payload["id"],),
+                (Store.user_key(user_id, payload["id"]),),
             ).fetchone()
+            if not row:
+                row = db.execute(
+                    "SELECT value FROM records WHERE kind='accounts' AND key=?",
+                    (payload["id"],),
+                ).fetchone()
+                if row:
+                    legacy = json.loads(row[0])
+                    recipient_count = db.execute("SELECT COUNT(*) FROM telegram_recipients").fetchone()[0]
+                    if legacy.get("user_id") not in (None, user_id) or recipient_count != 1:
+                        row = None
             if not row:
                 return "계좌가 삭제되어 요청을 적용할 수 없습니다."
             account = json.loads(row[0])
             account["tracked"] = payload["tracked"]
-            Store.put_in(db, "accounts", payload["id"], account)
+            Store.put_for_user_in(db, "accounts", payload["id"], account, user_id)
         elif action == "disconnect":
             if self.settings.kis_app_key or self.settings.kis_app_secret:
                 return "환경변수 KIS_APP_KEY/KIS_APP_SECRET을 먼저 제거하고 컨테이너를 재시작하세요."
-            db.execute("DELETE FROM records WHERE kind='credentials'")
-            db.execute("DELETE FROM records WHERE kind='provider_status'")
-            db.execute("DELETE FROM records WHERE kind='registration'")
+            prefix = "user:" + str(user_id) + ":"
+            for kind in ("credentials", "provider_status", "registration"):
+                db.execute("DELETE FROM records WHERE kind=? AND key LIKE ?", (kind, prefix + "%"))
             for key, value in db.execute(
-                "SELECT key,value FROM records WHERE kind='accounts'"
+                "SELECT key,value FROM records WHERE kind='accounts' AND key LIKE ?",
+                (prefix + "%",),
             ).fetchall():
                 account = json.loads(value)
                 account["tracked"] = False
@@ -553,11 +558,11 @@ class BotService:
         elif action == "order_stop":
             if payload["day"] != datetime.now(KST).date().isoformat():
                 return "요청한 날짜가 지나 적용하지 않았습니다. 다시 요청하세요."
-            Store.put_in(
-                db, "order_stop", payload["day"], {"stopped": payload["stopped"]}
+            Store.put_for_user_in(
+                db, "order_stop", payload["day"], {"stopped": payload["stopped"]}, user_id
             )
         else:
             raise DataError("미지원 확인 작업")
         if action in {"strategy", "manual_holding", "tracking", "disconnect"}:
-            db.execute("DELETE FROM records WHERE kind='proposals'")
+            db.execute("DELETE FROM records WHERE kind='proposals' AND key LIKE ?", ("user:" + str(user_id) + ":%",))
         return "변경을 적용했습니다. 분석에 반영하려면 '오늘 브리핑'을 입력하세요."
