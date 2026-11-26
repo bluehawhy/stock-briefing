@@ -167,7 +167,7 @@ class BriefingEngine:
                         action, score = apply_history(values, action, score, strategy, context)
                         feature_event("watchlist.history", "decision", symbol=symbol,
                                       signal=context["signal"], reason=context["reason"], action=action)
-                        self.store.put("watch_proposals", symbol, {
+                        self._put_watch_proposal(symbol, {
                             "symbol": symbol, "name": info.get("name", symbol),
                             "day": expected.isoformat(), "action": action,
                             "indicators": values, "score": score,
@@ -192,7 +192,7 @@ class BriefingEngine:
                             day, symbol, reason,
                         )
                         results.append(f"{info.get('name', symbol)} ({symbol})\n의견 보류: {reason}")
-                        self.store.put("watch_proposals", symbol, {
+                        self._put_watch_proposal(symbol, {
                             "action": "데이터 확인 필요", "reason": reason,
                             "at": now.isoformat(),
                         })
