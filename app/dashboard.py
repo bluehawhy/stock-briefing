@@ -153,12 +153,20 @@ def asset(filename: str):
     return FileResponse(ASSETS / filename, headers=HEADERS)
 
 
+def _dashboard_user_id():
+    user_ids = Settings.from_env().telegram_allowed_user_ids
+    if len(user_ids) != 1:
+        raise HTTPException(503, '대시보드는 단일 운영자 계정만 지원합니다.')
+    return next(iter(user_ids))
+
+
 @router.get('/api/overview')
 def overview(store: Store = Depends(authorize)):
+    user_id = _dashboard_user_id()
     latest = store.briefing()
-    proposals = dict(store.items('watch_proposals'))
+    proposals = dict(store.items_for_user('watch_proposals', user_id))
     watchlist = []
-    for symbol, info in sorted(store.items('watchlist')):
+    for symbol, info in sorted(store.items_for_user('watchlist', user_id)):
         record = proposals.get(symbol, {})
         values = record.get('indicators', {})
         watchlist.append({'symbol': symbol, 'name': info.get('name', symbol),
@@ -213,14 +221,15 @@ def add_watch(payload: WatchInput, store: Store = Depends(authorize)):
     try:
         if len(query) == 6 and query.isascii() and query.isalnum():
             symbol = symbol_code(query.upper())
-            known = store.get('watchlist', symbol) or store.get('symbol_names', symbol) or {}
+            user_id = _dashboard_user_id()
+            known = store.get_for_user('watchlist', symbol, user_id) or store.get('symbol_names', symbol) or {}
             name = known.get('name', symbol)
         else:
             matches = SymbolResolver(settings, store).resolve(query)
             if len(matches) != 1:
                 raise DataError('종목을 하나로 확인할 수 없습니다. 6자리 종목코드로 입력하세요.')
             symbol, name = matches[0], query
-        BotService(settings, store)._watchlist_change(symbol, {'name': name})
+        BotService(settings, store)._watchlist_change(symbol, {'name': name}, user_id)
         store.audit('web_watchlist_add', symbol)
     except DataError as exc:
         raise HTTPException(400, str(exc)) from None
@@ -231,7 +240,7 @@ def add_watch(payload: WatchInput, store: Store = Depends(authorize)):
 def remove_watch(symbol: str, store: Store = Depends(authorize)):
     try:
         symbol = symbol_code(symbol)
-        BotService(Settings.from_env(), store)._watchlist_change(symbol, None)
+        BotService(Settings.from_env(), store)._watchlist_change(symbol, None, _dashboard_user_id())
         store.audit('web_watchlist_remove', symbol)
     except DataError as exc:
         raise HTTPException(409, str(exc)) from None
