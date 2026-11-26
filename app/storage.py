@@ -55,6 +55,15 @@ class Store:
                     chat_id TEXT NOT NULL UNIQUE,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS dashboard_accounts (
+                    user_id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL, password_salt TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS dashboard_registrations (
+                    token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+                    expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS poll_state (
                     bot TEXT PRIMARY KEY,
                     next_update_id INTEGER NOT NULL
