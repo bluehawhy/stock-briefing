@@ -215,13 +215,13 @@ class WatchInput(BaseModel):
 @router.post('/api/watchlist')
 def add_watch(payload: WatchInput, store: Store = Depends(authorize)):
     settings = Settings.from_env()
+    user_id = _dashboard_user_id()
     query = payload.query.strip()
     if not query:
         raise HTTPException(400, '종목명 또는 종목코드를 입력하세요.')
     try:
         if len(query) == 6 and query.isascii() and query.isalnum():
             symbol = symbol_code(query.upper())
-            user_id = _dashboard_user_id()
             known = store.get_for_user('watchlist', symbol, user_id) or store.get('symbol_names', symbol) or {}
             name = known.get('name', symbol)
         else:
