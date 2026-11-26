@@ -120,11 +120,11 @@ class BotService:
         if command == "오늘 브리핑":
             from app.briefings import BriefingEngine
 
-            body = BriefingEngine(self.settings, self.store).generate()
+            body = BriefingEngine(self.settings, self.store, user_id=m.user_id).generate()
             if m.channel == "telegram":
                 from app.briefing_views import daily_view, summary
 
-                view = daily_view(self.store, today)
+                view = daily_view(self.store, today, m.user_id)
                 if view and view["body"] == body:
                     return self._briefing_menu(m, view, summary(view))
             return f"[새로 생성한 브리핑: {today}]\n{body}"
@@ -134,7 +134,7 @@ class BotService:
             values = command.split(maxsplit=3)
             if len(values) != 4 or values[3] not in (*ACTIONS, "전체"):
                 raise DataError("브리핑 분류를 확인하세요.")
-            view = self.store.get("briefing_views", values[2])
+            view = self.store.get_for_user("briefing_views", values[2], m.user_id)
             if not view:
                 return "해당 브리핑이 없습니다. 오늘 브리핑을 다시 선택하세요."
             return self._briefing_menu(m, view, details(view, values[3]))
@@ -187,7 +187,7 @@ class BotService:
             if command in {"관심종목", "관심종목 보기"}:
                 return "관심종목:\n" + (
                     "\n".join(
-                        f"{k} {v['name']}" for k, v in self.store.items("watchlist")
+                        f"{k} {v['name']}" for k, v in self.store.items_for_user("watchlist", m.user_id)
                     )
                     or "없음"
                 )
@@ -196,12 +196,12 @@ class BotService:
                 name = " ".join(parts[3:]) or symbol
                 if len(name) > 40:
                     raise DataError("종목명 길이 초과")
-                self._watchlist_change(symbol, {"name": name})
+                self._watchlist_change(symbol, {"name": name}, m.user_id)
                 self.store.audit("watchlist_add", symbol)
                 return f"관심종목 추가: {name} ({symbol}). 종목 유효성은 데이터 갱신 시 확인합니다."
             if len(parts) == 3 and parts[1] in {"제거", "삭제"}:
                 symbol = symbol_code(parts[2])
-                self._watchlist_change(symbol, None)
+                self._watchlist_change(symbol, None, m.user_id)
                 self.store.audit("watchlist_remove", symbol)
                 return f"관심종목 제거: {symbol}. 과거 데이터·모의 기록은 보관합니다."
         if command in {"보유종목", "보유량"}:
@@ -247,7 +247,8 @@ class BotService:
                 sections = []
                 for kind, title in (("proposals", "보유종목 제안"),
                                     ("watch_proposals", "관심종목 의견")):
-                    record = self.store.get(kind, symbol)
+                    record = (self.store.get_for_user(kind, symbol, m.user_id)
+                              if kind == "watch_proposals" else self.store.get(kind, symbol))
                     if not record:
                         continue
                     if "indicators" not in record:
@@ -431,7 +432,7 @@ class BotService:
         )
 
     @traced("services._watchlist_change")
-    def _watchlist_change(self, symbol, value):
+    def _watchlist_change(self, symbol, value, user_id):
         self.store.init()
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -442,15 +443,13 @@ class BotService:
                 raise DataError("데이터 갱신 중입니다. 완료 후 관심종목을 변경하세요.")
             if value is None:
                 db.execute(
-                    "DELETE FROM records WHERE kind='watchlist' AND key=?", (symbol,)
+                    Store.delete_for_user_in(db, "watchlist", symbol, user_id)
                 )
             else:
-                Store.put_in(db, "watchlist", symbol, value)
+                Store.put_for_user_in(db, "watchlist", symbol, value, user_id)
                 if value["name"] != symbol:
                     Store.put_in(db, "symbol_names", symbol, value)
-            db.execute(
-                "DELETE FROM records WHERE kind='proposals' AND key=?", (symbol,)
-            )
+            Store.delete_for_user_in(db, "watch_proposals", symbol, user_id)
 
     @traced("services._order_preview")
     def _order_preview(self, m, parts):
