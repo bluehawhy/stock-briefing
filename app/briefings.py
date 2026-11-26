@@ -94,7 +94,7 @@ class BriefingEngine:
                             "at": now.isoformat(),
                         },
                     )
-            self.store.save_briefing(day, body)
+            self.store.save_briefing(day, body, self.user_id)
             from app.briefing_views import save_view
 
             save_view(self.store, day, body, self.entries, self.user_id)
