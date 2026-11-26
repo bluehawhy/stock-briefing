@@ -31,8 +31,9 @@ def _ranges(days: list[date]) -> list[tuple[date, date]]:
 
 
 class BriefingEngine:
-    def __init__(self, settings: Settings, store: Store, provider=None):
+    def __init__(self, settings: Settings, store: Store, provider=None, user_id=None):
         self.settings, self.store, self.provider = settings, store, provider
+        self.user_id = str(user_id) if user_id is not None else None
 
     @traced("briefings.generate")
     def generate(self, *, now: datetime | None = None) -> str:
@@ -96,7 +97,7 @@ class BriefingEngine:
             self.store.save_briefing(day, body)
             from app.briefing_views import save_view
 
-            save_view(self.store, day, body, self.entries)
+            save_view(self.store, day, body, self.entries, self.user_id)
             self.store.put(
                 "runs", day.isoformat(), {"status": status, "at": now.isoformat()}
             )
@@ -107,9 +108,18 @@ class BriefingEngine:
                 provider.close()
             self.store.release_lease("collection", lease)
 
+    def _put_watch_proposal(self, symbol, value):
+        if self.user_id is None:
+            self.store.put("watch_proposals", symbol, value)
+        else:
+            self.store.put_for_user("watch_proposals", symbol, value, self.user_id)
+
     @traced("briefings._generate_watchlist")
     def _generate_watchlist(self, day: date, now: datetime) -> str:
-        interests = dict(self.store.items("watchlist"))
+        interests = dict(
+            self.store.items_for_user("watchlist", self.user_id)
+            if self.user_id is not None else self.store.items("watchlist")
+        )
         if not interests:
             return "[관심종목]\n등록된 종목이 없습니다."
         LOG.info("Watchlist analysis started: day=%s count=%d", day, len(interests))
@@ -139,7 +149,7 @@ class BriefingEngine:
                         day, symbol, reason,
                     )
                     results.append(f"{info.get('name', symbol)} ({symbol})\n의견 보류: {reason}")
-                    self.store.put("watch_proposals", symbol, {
+                    self._put_watch_proposal(symbol, {
                         "action": "데이터 확인 필요", "reason": reason,
                         "at": now.isoformat(),
                     })
