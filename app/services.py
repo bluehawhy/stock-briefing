@@ -287,7 +287,7 @@ class BotService:
         if command == "증권사 연결 한국투자증권":
             return (
                 "5분 내 일회용 등록 화면에 입력하세요. 키를 대화에 보내지 마세요.\n"
-                + registration_link(self.settings, self.store)
+                + registration_link(self.settings, self.store, m.user_id)
             )
         if command == "증권사 연결 미래에셋증권":
             return "미래에셋 국내주식 API 명세·개인 이용 권한을 확인하기 전에는 연결할 수 없습니다."
