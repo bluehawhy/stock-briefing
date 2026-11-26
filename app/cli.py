@@ -67,7 +67,10 @@ def main() -> None:
     elif args.command == "send-briefing":
         print(asyncio.run(send_briefing(settings, store)))
     elif args.command == "generate-briefing":
-        print(BriefingEngine(settings, store).generate())
+        if len(settings.telegram_allowed_user_ids) != 1:
+            raise ValueError("Configure exactly one authorized user for briefing generation")
+        user_id = next(iter(settings.telegram_allowed_user_ids))
+        print(BriefingEngine(settings, store, user_id=user_id).generate())
     elif args.command == "run-daily":
         from app.scheduler import run_daily
 
