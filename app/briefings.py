@@ -494,7 +494,10 @@ def _process_job(settings, store):
     if job is None:
         return False
     try:
-        BriefingEngine(settings, store).generate()
+        if len(settings.telegram_allowed_user_ids) != 1:
+            raise RuntimeError("Refresh requires exactly one authorized user")
+        user_id = next(iter(settings.telegram_allowed_user_ids))
+        BriefingEngine(settings, store, user_id=user_id).generate()
     except Exception as exc:
         LOG.warning("Refresh job failed (%s)", type(exc).__name__, exc_info=True)
         store.finish_job(job, "failed", "갱신 실패. 서비스 상태 확인 후 다시 요청하세요.")
