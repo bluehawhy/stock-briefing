@@ -122,6 +122,9 @@ async def register_account(token: str, request: Request):
         ).fetchone()
         if not row or str(row[0]) != user_id or row[2] or row[1] <= now:
             raise HTTPException(404)
+        recipients = db.execute("SELECT user_id FROM telegram_recipients").fetchall()
+        if len(recipients) == 1 and str(recipients[0][0]) == user_id:
+            Store.migrate_legacy_user_data_in(db, user_id)
         taken = db.execute(
             "SELECT 1 FROM dashboard_accounts WHERE username=? AND user_id<>?",
             (username, user_id),
