@@ -104,7 +104,7 @@ class BotService:
         parts = command.split()
         categories = {"관심종목", "보유종목", "보유량", "제안", "증권사", "추적",
                       "설정", "알림", "주문", "확인", "브리핑", "오늘", "서비스",
-                      "연동", "도움말", "버전", "로그", "지금", "/start", "/help", "/version", "/status"}
+                      "연동", "대시보드", "도움말", "버전", "로그", "지금", "/start", "/help", "/version", "/status"}
         feature_event("command.route", "selected",
                       category=parts[0] if parts and parts[0] in categories else "other")
         today = datetime.now(KST).date()
@@ -117,6 +117,13 @@ class BotService:
 
             prefix = "지금 로그 보기" if command.startswith("지금 ") else "로그 보기"
             return view_logs(self.store, command[len(prefix):])
+        if command == "대시보드 계정 등록":
+            from app.dashboard_accounts import dashboard_registration_link
+            try:
+                link = dashboard_registration_link(self.settings, self.store, m.user_id)
+            except ValueError as exc:
+                raise DataError(str(exc)) from None
+            return "5분 동안 유효한 1회용 대시보드 계정 등록 링크입니다. 비밀번호는 텔레그램에 보내지 말고 HTTPS 화면에서 입력하세요.\\n" + link
         if command == "오늘 브리핑":
             from app.briefings import BriefingEngine
 
