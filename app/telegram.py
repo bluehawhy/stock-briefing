@@ -192,7 +192,7 @@ async def send_briefing(settings: Settings, store: Store) -> str:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             api = TelegramAPI(settings.telegram_bot_token, client)
-            view = daily_view(store, day)
+            view = daily_view(store, day, user_id)
             if view and view["body"] == record[1]:
                 commands, labels = options(view)
                 await api.send_text(chat_id, summary(view), choice_markup({
