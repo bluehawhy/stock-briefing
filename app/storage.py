@@ -447,9 +447,53 @@ class Store:
         with self.connect() as source, sqlite3.connect(destination) as target:
             source.backup(target)
 
+    @staticmethod
+    def migrate_legacy_user_data_in(db, user_id: str) -> None:
+        user_id = str(user_id)
+        kinds = (
+            "accounts", "briefing_view_days", "briefing_views", "credentials",
+            "evaluations", "holdings", "manual_holdings", "order_limits",
+            "order_stop", "proposals", "provider_status", "recommendations",
+            "registration", "runs", "settings", "watch_proposals", "watchlist",
+        )
+        for kind in kinds:
+            rows = db.execute(
+                "SELECT key,value FROM records WHERE kind=? AND key NOT LIKE 'user:%'",
+                (kind,),
+            ).fetchall()
+            for key, raw in rows:
+                try:
+                    value = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                owner = value.get("user_id") if isinstance(value, dict) else None
+                if owner not in (None, user_id):
+                    continue
+                scoped_key = Store.user_key(user_id, key)
+                if not db.execute(
+                    "SELECT 1 FROM records WHERE kind=? AND key=?", (kind, scoped_key)
+                ).fetchone():
+                    Store.put_for_user_in(db, kind, key, value, user_id)
+                db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
+        rows = db.execute(
+            "SELECT briefing_date,body,created_at FROM briefings"
+        ).fetchall()
+        for day, body, created_at in rows:
+            scoped_key = Store.user_key(user_id, day)
+            if not db.execute(
+                "SELECT 1 FROM records WHERE kind='briefings' AND key=?", (scoped_key,)
+            ).fetchone():
+                Store.put_for_user_in(
+                    db, "briefings", day,
+                    {"day": day, "body": body, "created_at": created_at}, user_id,
+                )
+
     def register_telegram(self, user_id: str, chat_id: str) -> None:
         self.init()
         with self.connect() as db:
+            existing = db.execute("SELECT user_id FROM telegram_recipients").fetchall()
+            if len(existing) == 1 and str(existing[0][0]) != str(user_id):
+                self.migrate_legacy_user_data_in(db, str(existing[0][0]))
             db.execute(
                 """INSERT INTO telegram_recipients VALUES (?, ?, ?)
                    ON CONFLICT(user_id) DO UPDATE SET chat_id=excluded.chat_id,
