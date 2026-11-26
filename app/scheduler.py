@@ -40,7 +40,7 @@ def run_daily(settings, store):
             user = next(iter(settings.telegram_allowed_user_ids))
             if not store.telegram_chat(user):
                 return 'skipped: authorized user has not started the bot'
-            BriefingEngine(settings, store).generate()
+            BriefingEngine(settings, store, user_id=user).generate()
             # Crossing midnight must not send a different day's saved briefing.
             if datetime.now(KST).date() != day:
                 return 'skipped: day changed during generation'
