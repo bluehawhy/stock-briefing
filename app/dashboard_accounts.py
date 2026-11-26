@@ -122,6 +122,12 @@ async def register_account(token: str, request: Request):
         ).fetchone()
         if not row or str(row[0]) != user_id or row[2] or row[1] <= now:
             raise HTTPException(404)
+        taken = db.execute(
+            "SELECT 1 FROM dashboard_accounts WHERE username=? AND user_id<>?",
+            (username, user_id),
+        ).fetchone()
+        if taken:
+            return _page("<p>이미 사용 중인 아이디입니다. 다른 아이디로 다시 입력하세요.</p>")
         existing = db.execute("SELECT username FROM dashboard_accounts WHERE user_id=?", (user_id,)).fetchone()
         if existing:
             db.execute(
