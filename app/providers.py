@@ -68,10 +68,13 @@ class KisProvider:
         *,
         credentials: dict | None = None,
         client: httpx.Client | None = None,
+        user_id: str | None = None,
     ):
         self.settings, self.store = settings, store
+        self.user_id = str(user_id) if user_id is not None else None
         if credentials is None:
-            saved = store.get("credentials", "kis")
+            saved = (store.get_for_user("credentials", "kis", self.user_id)
+                     if self.user_id is not None else store.get("credentials", "kis"))
             credentials = (
                 Vault(settings).open(saved)
                 if saved
@@ -143,7 +146,7 @@ class KisProvider:
                 "다른 작업이 토큰을 갱신 중입니다. 잠시 후 다시 시도하세요."
             )
         try:
-            cache = self.store.get("credentials", "kis-token")
+            cache = (self.store.get_for_user("credentials", "kis-token", self.user_id) if self.user_id is not None else self.store.get("credentials", "kis-token"))
             if cache and (self.settings.master_key_file or self.settings.master_key):
                 saved = Vault(self.settings).open(cache)
                 if (
@@ -153,11 +156,11 @@ class KisProvider:
                     > datetime.now(timezone.utc) + timedelta(minutes=5)
                 ):
                     self.token = saved["token"]
-                    self.store.put(
-                        "provider_status",
-                        "kis",
-                        {"state": "connected", "expires_at": saved["expires_at"]},
-                    )
+                    status = {"state": "connected", "expires_at": saved["expires_at"]}
+                    if self.user_id is not None:
+                        self.store.put_for_user("provider_status", "kis", status, self.user_id)
+                    else:
+                        self.store.put("provider_status", "kis", status)
                     return
             result, _ = self._raw(
                 "POST",
@@ -176,23 +179,25 @@ class KisProvider:
                 datetime.now(timezone.utc) + timedelta(seconds=lifetime)
             ).isoformat()
             if self.settings.master_key_file or self.settings.master_key:
-                self.store.put(
-                    "credentials",
-                    "kis-token",
-                    Vault(self.settings).seal(
-                        {
-                            "token": self.token,
-                            "expires_at": expiry,
-                            "app_key": self.credentials["app_key"],
-                            "environment": self.environment,
-                        }
-                    ),
-                )
-            self.store.put(
-                "provider_status", "kis", {"state": "connected", "expires_at": expiry}
-            )
+                sealed = Vault(self.settings).seal({
+                    "token": self.token, "expires_at": expiry,
+                    "app_key": self.credentials["app_key"], "environment": self.environment,
+                })
+                if self.user_id is not None:
+                    self.store.put_for_user("credentials", "kis-token", sealed, self.user_id)
+                else:
+                    self.store.put("credentials", "kis-token", sealed)
+            status = {"state": "connected", "expires_at": expiry}
+            if self.user_id is not None:
+                self.store.put_for_user("provider_status", "kis", status, self.user_id)
+            else:
+                self.store.put("provider_status", "kis", status)
         except DataError:
-            self.store.put("provider_status", "kis", {"state": "authentication_failed"})
+            status = {"state": "authentication_failed"}
+            if self.user_id is not None:
+                self.store.put_for_user("provider_status", "kis", status, self.user_id)
+            else:
+                self.store.put("provider_status", "kis", status)
             raise
         finally:
             self.store.release_lease("kis-auth", lease)
