@@ -167,32 +167,34 @@ async def poll(settings: Settings, store: Store) -> None:
 
 
 @traced("telegram.send_briefing")
-async def send_briefing(settings: Settings, store: Store) -> str:
+async def send_briefing(settings: Settings, store: Store, user_id: str | None = None) -> str:
     """Send today's saved briefing once; an ambiguous send requires manual review."""
-    if len(settings.telegram_allowed_user_ids) != 1:
-        raise ValueError(
-            "Configure exactly one TELEGRAM_ALLOWED_USER_IDS for scheduled delivery"
-        )
+    if user_id is None:
+        if len(settings.telegram_allowed_user_ids) != 1:
+            raise ValueError("Specify user_id for multi-user Telegram delivery")
+        user_id = next(iter(settings.telegram_allowed_user_ids))
+    user_id = str(user_id)
+    if user_id not in settings.telegram_allowed_user_ids:
+        raise ValueError("Telegram user is not authorized")
     day: date = datetime.now(KST).date()
-    if not store.get("settings", "notifications", {"enabled": True})["enabled"]:
+    if not store.get_for_user("settings", "notifications", user_id, {"enabled": True})["enabled"]:
         feature_event("telegram.delivery", "skipped", reason="scheduled notifications disabled")
         return "skipped: scheduled notifications disabled"
-    record = store.briefing(day)
+    record = store.briefing(day, user_id)
     if not record:
         feature_event("telegram.delivery", "skipped", reason="no briefing saved for today")
         return "skipped: no briefing saved for today"
-    user_id = next(iter(settings.telegram_allowed_user_ids))
     chat_id = store.telegram_chat(user_id)
     if not chat_id:
         feature_event("telegram.delivery", "skipped", reason="authorized user has not started the bot")
         return "skipped: authorized user has not started the bot"
-    if not store.reserve_delivery(day):
+    if not store.reserve_delivery(day, user_id):
         feature_event("telegram.delivery", "skipped", reason="delivery is already recorded or awaiting review")
         return "skipped: delivery is already recorded or awaiting review"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             api = TelegramAPI(settings.telegram_bot_token, client)
-            view = daily_view(store, day)
+            view = daily_view(store, day, user_id)
             if view and view["body"] == record[1]:
                 commands, labels = options(view)
                 await api.send_text(chat_id, summary(view), choice_markup({
@@ -203,10 +205,10 @@ async def send_briefing(settings: Settings, store: Store) -> str:
     except Exception:
         # Do not retry blindly after an uncertain API outcome: that can duplicate a briefing.
         store.finish_delivery(
-            day, "review_required", "Telegram send failed or outcome unknown"
+            day, "review_required", "Telegram send failed or outcome unknown", user_id
         )
         raise RuntimeError("Telegram send failed; delivery requires review") from None
-    store.finish_delivery(day, "sent")
+    store.finish_delivery(day, "sent", user_id=user_id)
     return "sent"
 
 

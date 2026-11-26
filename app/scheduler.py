@@ -27,24 +27,23 @@ def run_daily(settings, store):
             return 'skipped: daily worker already running'
         try:
             day = datetime.now(KST).date()
-            with store.connect() as db:
-                if db.execute(
-                    "SELECT status FROM delivery_runs WHERE briefing_date=? AND channel='telegram'",
-                    (day.isoformat(),),
-                ).fetchone():
-                    return 'skipped: delivery is already recorded or awaiting review'
-            if not store.get('settings', 'notifications', {'enabled': True})['enabled']:
-                return 'skipped: scheduled notifications disabled'
-            if len(settings.telegram_allowed_user_ids) != 1 or not settings.telegram_bot_token:
+            if not settings.telegram_allowed_user_ids or not settings.telegram_bot_token:
                 raise RuntimeError('Scheduled Telegram configuration is incomplete')
-            user = next(iter(settings.telegram_allowed_user_ids))
-            if not store.telegram_chat(user):
-                return 'skipped: authorized user has not started the bot'
-            BriefingEngine(settings, store).generate()
-            # Crossing midnight must not send a different day's saved briefing.
-            if datetime.now(KST).date() != day:
-                return 'skipped: day changed during generation'
-            return asyncio.run(send_briefing(settings, store))
+            outcomes = []
+            for user_id in sorted(settings.telegram_allowed_user_ids):
+                if not store.telegram_chat(user_id):
+                    outcomes.append(user_id + ': no Telegram chat')
+                    continue
+                if not store.get_for_user('settings', 'notifications', user_id, {'enabled': True})['enabled']:
+                    outcomes.append(user_id + ': notifications disabled')
+                    continue
+                BriefingEngine(settings, store, user_id=user_id).generate()
+                # Crossing midnight must not send a different day's saved briefing.
+                if datetime.now(KST).date() != day:
+                    outcomes.append(user_id + ': day changed during generation')
+                    continue
+                outcomes.append(user_id + ': ' + asyncio.run(send_briefing(settings, store, user_id)))
+            return '; '.join(outcomes) if outcomes else 'no users ready for delivery'
         finally:
             store.release_lease('daily-worker', owner)
 

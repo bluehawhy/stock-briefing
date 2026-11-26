@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.kakao import router
 from app.registration import router as registration_router
+from app.dashboard_accounts import router as dashboard_accounts_router
 from app.dashboard import router as dashboard_router, HEADERS as DASHBOARD_HEADERS
 from app.briefings import process_jobs
 from app.config import Settings
@@ -76,6 +77,7 @@ async def lifespan(app):
 app = FastAPI(title="stock-briefing messaging", lifespan=lifespan)
 app.include_router(router)
 app.include_router(registration_router)
+app.include_router(dashboard_accounts_router)
 app.include_router(dashboard_router)
 
 

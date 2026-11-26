@@ -18,7 +18,7 @@ def digest(token: str) -> str:
 
 
 @traced("connections.registration_link")
-def registration_link(settings: Settings, store: Store) -> str:
+def registration_link(settings: Settings, store: Store, user_id: str | None = None) -> str:
     url = urlparse(settings.public_base_url)
     if (
         url.scheme != "https"
@@ -31,23 +31,21 @@ def registration_link(settings: Settings, store: Store) -> str:
         raise DataError("PUBLIC_BASE_URL에 등록 화면의 HTTPS 주소를 설정하세요.")
     Vault(settings)
     token = secrets.token_urlsafe(32)
-    store.put(
-        "registration",
-        digest(token),
-        {
-            "expires_at": (
-                datetime.now(timezone.utc) + timedelta(minutes=5)
-            ).isoformat(),
-            "used": False,
-        },
-    )
+    record = {
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        "used": False,
+    }
+    if user_id is not None:
+        store.put_for_user("registration", digest(token), record, str(user_id))
+    else:
+        store.put("registration", digest(token), record)
     return settings.public_base_url + "/broker/register/" + token
 
 
-def valid_registration(store: Store, token: str) -> bool:
+def valid_registration(store: Store, token: str, user_id: str | None = None) -> bool:
     if not 30 <= len(token) <= 100:
         return False
-    record = store.get("registration", digest(token))
+    record = (store.get_for_user("registration", digest(token), str(user_id)) if user_id is not None else store.get("registration", digest(token)))
     return bool(
         record
         and not record["used"]

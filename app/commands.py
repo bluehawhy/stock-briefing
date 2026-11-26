@@ -32,6 +32,7 @@ MENUS = {
         "당일 주문 재개",
     ),
     "상태": ("서비스 상태", "연동 상태", "버전", "로그 보기"),
+    "대시보드": ("대시보드 계정 등록",),
     "모의 운용": ("모의 운용 기록",),
     "빠른 메뉴": ("오늘 브리핑", "관심종목 보기", "보유종목", "종목별 제안 선택",
                   "서비스 상태", "연동 상태", "버전"),
@@ -324,7 +325,7 @@ class CommandNavigator:
                 if len(text) > 40:
                     return "종목명은 40자 이내로 보내세요. (취소 가능)"
                 names = dict(self.store.items("symbol_names"))
-                names.update(dict(self.store.items("watchlist")))
+                names.update(dict(self.store.items_for_user("watchlist", message.user_id)))
                 matches = [
                     code for code, value in names.items() if value["name"] == text
                 ]
@@ -423,8 +424,8 @@ class CommandNavigator:
             names = dict(self.store.items("symbol_names"))
             names.update(dict(self.store.items("watchlist")))
             proposals = dict(self.store.items("proposals"))
-            watch_proposals = dict(self.store.items("watch_proposals"))
-            symbols = sorted(set(dict(self.store.items("watchlist")))
+            watch_proposals = dict(self.store.items_for_user("watch_proposals", message.user_id))
+            symbols = sorted(set(dict(self.store.items_for_user("watchlist", message.user_id)))
                              | set(proposals) | set(watch_proposals)
                              | {symbol for symbol, holding in self.store.items("manual_holdings")
                                 if holding.get("quantity", 0) > 0})

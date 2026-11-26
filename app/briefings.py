@@ -31,8 +31,28 @@ def _ranges(days: list[date]) -> list[tuple[date, date]]:
 
 
 class BriefingEngine:
-    def __init__(self, settings: Settings, store: Store, provider=None):
+    def __init__(self, settings: Settings, store: Store, provider=None, user_id=None):
         self.settings, self.store, self.provider = settings, store, provider
+        self.user_id = str(user_id) if user_id is not None else None
+
+    _USER_KINDS = {"accounts", "credentials", "evaluations", "holdings", "manual_holdings",
+                    "proposals", "provider_status", "recommendations", "settings",
+                    "watch_proposals", "order_limits", "order_stop", "runs"}
+
+    def _get(self, kind, key, default=None):
+        if self.user_id is not None and kind in self._USER_KINDS:
+            return self.store.get_for_user(kind, key, self.user_id, default)
+        return self.store.get(kind, key, default)
+
+    def _items(self, kind):
+        if self.user_id is not None and kind in self._USER_KINDS:
+            return self.store.items_for_user(kind, self.user_id)
+        return self.store.items(kind)
+
+    def _put(self, kind, key, value):
+        if self.user_id is not None and kind in self._USER_KINDS:
+            return self.store.put_for_user(kind, key, value, self.user_id)
+        return self.store.put(kind, key, value)
 
     @traced("briefings.generate")
     def generate(self, *, now: datetime | None = None) -> str:
@@ -51,21 +71,21 @@ class BriefingEngine:
         try:
             try:
                 watch_body = self._generate_watchlist(day, now)
-                has_holdings = any(a.get("tracked") for _, a in self.store.items("accounts")) or any(
-                    h.get("quantity", 0) > 0 for _, h in self.store.items("manual_holdings")
+                has_holdings = any(a.get("tracked") for _, a in self._items("accounts")) or any(
+                    h.get("quantity", 0) > 0 for _, h in self._items("manual_holdings")
                 )
                 holdings_body = "[보유종목]\n등록된 종목이 없습니다."
                 if has_holdings:
                     try:
-                        provider = provider or KisProvider(self.settings, self.store)
+                        provider = provider or KisProvider(self.settings, self.store, user_id=self.user_id)
                         holdings_body = self._generate(day, now, provider)
                     except (DataError, KeyError, TypeError, ValueError) as exc:
                         self.entries = [e for e in self.entries if e["section"] != "보유종목"]
                         reason = str(exc) if isinstance(exc, DataError) else "보유종목 데이터 오류"
                         LOG.warning("Holdings briefing withheld: day=%s reason=%s", day, reason)
                         holdings_body = f"[보유종목]\n데이터 확인 필요: {reason}\n의견·수량 보류"
-                        for symbol, _ in self.store.items("proposals"):
-                            self.store.put("proposals", symbol, {
+                        for symbol, _ in self._items("proposals"):
+                            self._put("proposals", symbol, {
                                 "action": "데이터 확인 필요", "reason": reason,
                                 "day": day.isoformat(), "at": now.isoformat(),
                             })
@@ -82,8 +102,8 @@ class BriefingEngine:
                 body = f"발송일: {day}\n데이터 확인 필요: {reason}\n매매 의견·수량을 보류합니다."
                 self.entries = []
                 status = "data_required"
-                for symbol, _ in self.store.items("proposals"):
-                    self.store.put(
+                for symbol, _ in self._items("proposals"):
+                    self._put(
                         "proposals",
                         symbol,
                         {
@@ -93,13 +113,11 @@ class BriefingEngine:
                             "at": now.isoformat(),
                         },
                     )
-            self.store.save_briefing(day, body)
+            self.store.save_briefing(day, body, self.user_id)
             from app.briefing_views import save_view
 
-            save_view(self.store, day, body, self.entries)
-            self.store.put(
-                "runs", day.isoformat(), {"status": status, "at": now.isoformat()}
-            )
+            save_view(self.store, day, body, self.entries, self.user_id)
+            self._put("runs", day.isoformat(), {"status": status, "at": now.isoformat()})
             LOG.info("Briefing saved: day=%s status=%s", day, status)
             return body
         finally:
@@ -107,9 +125,18 @@ class BriefingEngine:
                 provider.close()
             self.store.release_lease("collection", lease)
 
+    def _put_watch_proposal(self, symbol, value):
+        if self.user_id is None:
+            self.store.put("watch_proposals", symbol, value)
+        else:
+            self.store.put_for_user("watch_proposals", symbol, value, self.user_id)
+
     @traced("briefings._generate_watchlist")
     def _generate_watchlist(self, day: date, now: datetime) -> str:
-        interests = dict(self.store.items("watchlist"))
+        interests = dict(
+            self.store.items_for_user("watchlist", self.user_id)
+            if self.user_id is not None else self.store.items("watchlist")
+        )
         if not interests:
             return "[관심종목]\n등록된 종목이 없습니다."
         LOG.info("Watchlist analysis started: day=%s count=%d", day, len(interests))
@@ -118,7 +145,7 @@ class BriefingEngine:
         highlights = []
         try:
             try:
-                configured = self.store.get("settings", "strategy")
+                configured = self._get("settings", "strategy")
                 strategy = Strategy.parse(configured) if configured else WatchStrategy()
                 # Observed reference-stock sessions; never synthetic weekday calendars.
                 end = day - timedelta(days=1)
@@ -139,7 +166,7 @@ class BriefingEngine:
                         day, symbol, reason,
                     )
                     results.append(f"{info.get('name', symbol)} ({symbol})\n의견 보류: {reason}")
-                    self.store.put("watch_proposals", symbol, {
+                    self._put_watch_proposal(symbol, {
                         "action": "데이터 확인 필요", "reason": reason,
                         "at": now.isoformat(),
                     })
@@ -157,7 +184,7 @@ class BriefingEngine:
                         action, score = apply_history(values, action, score, strategy, context)
                         feature_event("watchlist.history", "decision", symbol=symbol,
                                       signal=context["signal"], reason=context["reason"], action=action)
-                        self.store.put("watch_proposals", symbol, {
+                        self._put_watch_proposal(symbol, {
                             "symbol": symbol, "name": info.get("name", symbol),
                             "day": expected.isoformat(), "action": action,
                             "indicators": values, "score": score,
@@ -182,7 +209,7 @@ class BriefingEngine:
                             day, symbol, reason,
                         )
                         results.append(f"{info.get('name', symbol)} ({symbol})\n의견 보류: {reason}")
-                        self.store.put("watch_proposals", symbol, {
+                        self._put_watch_proposal(symbol, {
                             "action": "데이터 확인 필요", "reason": reason,
                             "at": now.isoformat(),
                         })
@@ -225,10 +252,10 @@ class BriefingEngine:
         if not trading:
             raise DataError("예상 거래일을 확정할 수 없습니다.")
         expected = trading[-1]
-        strategy_values = self.store.get("settings", "strategy")
+        strategy_values = self._get("settings", "strategy")
         strategy = Strategy.parse(strategy_values or {})
         tracked = [
-            (key, a) for key, a in self.store.items("accounts") if a.get("tracked")
+            (key, a) for key, a in self._items("accounts") if a.get("tracked")
         ]
         holdings_error = None
         snapshots = []
@@ -236,14 +263,14 @@ class BriefingEngine:
             try:
                 holdings = provider.holdings(account)
                 snapshot = {"quantities": holdings, "at": now.isoformat()}
-                self.store.put("holdings", key, snapshot)
+                self._put("holdings", key, snapshot)
                 snapshots.append(snapshot)
             except (DataError, KeyError, ValueError, TypeError):
                 holdings_error = (
                     "추적 계좌 보유량 조회 실패: 이전 잔고를 재사용하지 않습니다."
                 )
         interests = {}
-        manual_holdings = dict(self.store.items("manual_holdings")) if not tracked else {}
+        manual_holdings = dict(self._items("manual_holdings")) if not tracked else {}
         held_symbols = {
             symbol
             for snapshot in snapshots
@@ -285,7 +312,7 @@ class BriefingEngine:
                         snapshot["quantities"].get(symbol, 0) for snapshot in snapshots
                     )
                 else:
-                    manual = self.store.get("manual_holdings", symbol)
+                    manual = self._get("manual_holdings", symbol)
                     if manual is None:
                         raise DataError(
                             "보유량 미등록: 0주인 경우에도 '보유량 설정 종목코드 0'으로 확인하세요."
@@ -327,15 +354,15 @@ class BriefingEngine:
                     "at": now.isoformat(),
                 }
                 feature_event("holdings.opinion", "ready", symbol=symbol, basis_day=expected, action=action, score=score, quantity=quantity, reason=reason)
-                self.store.put("proposals", symbol, result)
+                self._put("proposals", symbol, result)
                 # Preserve the first valid recommendation and its original cost/policy snapshot.
                 key = day.isoformat() + ":" + symbol
                 if (
                     action in {"매수", "매도"}
                     and quantity
-                    and not self.store.get("recommendations", key)
+                    and not self._get("recommendations", key)
                 ):
-                    self.store.put("recommendations", key, result)
+                    self._put("recommendations", key, result)
                 results[symbol] = self._format(result)
                 self.entries.append({"section": "보유종목", "symbol": symbol,
                                      "action": action, "text": results[symbol]})
@@ -344,7 +371,7 @@ class BriefingEngine:
                 reason = (
                     str(exc) if isinstance(exc, DataError) else "시장 데이터 필드 오류"
                 )
-                self.store.put(
+                self._put(
                     "proposals",
                     symbol,
                     {
@@ -448,8 +475,8 @@ class BriefingEngine:
 
     @traced("briefings.evaluate")
     def evaluate(self, trading: list[date], expected: date) -> None:
-        for key, rec in self.store.items("recommendations"):
-            if self.store.get("evaluations", key):
+        for key, rec in self._items("recommendations"):
+            if self._get("evaluations", key):
                 continue
             entry_day = date.fromisoformat(rec["day"])
             later = [d for d in trading if d > entry_day]
@@ -475,7 +502,7 @@ class BriefingEngine:
                     "symbol": rec["symbol"],
                 }
             )
-            self.store.put("evaluations", key, result)
+            self._put("evaluations", key, result)
 
 
 def _process_job(settings, store):
@@ -484,7 +511,10 @@ def _process_job(settings, store):
     if job is None:
         return False
     try:
-        BriefingEngine(settings, store).generate()
+        if not settings.telegram_allowed_user_ids:
+            raise RuntimeError("Refresh requires at least one authorized user")
+        for user_id in sorted(settings.telegram_allowed_user_ids):
+            BriefingEngine(settings, store, user_id=user_id).generate()
     except Exception as exc:
         LOG.warning("Refresh job failed (%s)", type(exc).__name__, exc_info=True)
         store.finish_job(job, "failed", "갱신 실패. 서비스 상태 확인 후 다시 요청하세요.")

@@ -18,6 +18,26 @@ from app.providers import KisProvider, Vault
 from app.storage import Store
 
 router = APIRouter()
+
+
+def _registration_user_id(store: Store, token: str) -> str | None:
+    if not 30 <= len(token) <= 100:
+        return None
+    key = digest(token)
+    store.init()
+    with store.connect() as db:
+        rows = db.execute("SELECT key,value FROM records WHERE kind='registration'").fetchall()
+        recipients = db.execute("SELECT user_id FROM telegram_recipients").fetchall()
+    for record_key, raw in rows:
+        if record_key.endswith(":" + key):
+            try:
+                return str(json.loads(raw)["user_id"])
+            except (KeyError, TypeError, ValueError):
+                return None
+    if store.get("registration", key) and len(recipients) == 1:
+        return str(recipients[0][0])
+    return None
+
 HEADERS = {
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
@@ -42,7 +62,8 @@ def page(body: str) -> HTMLResponse:
 def form(token: str):
     settings = Settings.from_env()
     store = Store(settings.db_path)
-    if not valid_registration(store, token):
+    user_id = _registration_user_id(store, token)
+    if not user_id or not valid_registration(store, token, user_id):
         raise HTTPException(404)
     return page(
         "<p>5분 내 일회용 등록입니다. 실제 주문은 제출하지 않습니다.</p>"
@@ -59,7 +80,7 @@ def form(token: str):
 
 
 @traced("registration.save_connection")
-def save_connection(settings: Settings, store: Store, token: str, values: dict) -> str:
+def save_connection(settings: Settings, store: Store, token: str, values: dict, user_id: str) -> str:
     # Keep credential replacement mutually exclusive with collection and other registrations.
     lease = store.acquire_lease("collection", 60)
     if not lease:
@@ -67,7 +88,7 @@ def save_connection(settings: Settings, store: Store, token: str, values: dict) 
             "데이터 갱신 또는 연결 검증이 진행 중입니다. 잠시 후 다시 입력하세요."
         )
     try:
-        if not valid_registration(store, token):
+        if not valid_registration(store, token, user_id):
             raise DataError("등록 링크가 만료되었거나 이미 사용되었습니다.")
         environment, app_key, app_secret = (
             values.get("environment"),
@@ -93,7 +114,7 @@ def save_connection(settings: Settings, store: Store, token: str, values: dict) 
             "app_secret": app_secret,
         }
         vault = Vault(settings)
-        provider = KisProvider(settings, store, credentials=credentials)
+        provider = KisProvider(settings, store, credentials=credentials, user_id=user_id)
         try:
             provider.authenticate()  # No balance request before the user's tracking selection.
         finally:
@@ -103,7 +124,7 @@ def save_connection(settings: Settings, store: Store, token: str, values: dict) 
             db.execute("BEGIN IMMEDIATE")
             registration = db.execute(
                 "SELECT value FROM records WHERE kind='registration' AND key=?",
-                (digest(token),),
+                (Store.user_key(user_id, digest(token)),),
             ).fetchone()
             if not registration:
                 raise DataError("등록 요청을 찾을 수 없습니다.")
@@ -114,16 +135,17 @@ def save_connection(settings: Settings, store: Store, token: str, values: dict) 
             ):
                 raise DataError("등록 링크가 만료되었거나 이미 사용되었습니다.")
             record["used"] = True
-            Store.put_in(db, "registration", digest(token), record)
-            Store.put_in(db, "credentials", "kis", vault.seal(credentials))
+            Store.put_for_user_in(db, "registration", digest(token), record, user_id)
+            Store.put_for_user_in(db, "credentials", "kis", vault.seal(credentials), user_id)
             # New keys may grant different accounts: require tracking reconfirmation.
             for key, row in db.execute(
-                "SELECT key,value FROM records WHERE kind='accounts'"
+                "SELECT key,value FROM records WHERE kind='accounts' AND key LIKE ?",
+                (Store.user_key(user_id, "") + "%",),
             ).fetchall():
                 account = json.loads(row)
                 account["tracked"] = False
                 Store.put_in(db, "accounts", key, account)
-            Store.put_in(
+            Store.put_for_user_in(
                 db,
                 "accounts",
                 account_id,
@@ -133,8 +155,10 @@ def save_connection(settings: Settings, store: Store, token: str, values: dict) 
                     "tracked": False,
                     "provider": "kis",
                 },
+                user_id,
             )
-            db.execute("DELETE FROM records WHERE kind='proposals'")
+            db.execute("DELETE FROM records WHERE kind='proposals' AND key LIKE ?",
+                       (Store.user_key(user_id, "") + "%",))
         store.audit("broker_registered", account_id)
         return account_id
     finally:
@@ -146,7 +170,8 @@ def save_connection(settings: Settings, store: Store, token: str, values: dict) 
 async def submit(token: str, request: Request):
     settings = Settings.from_env()
     store = Store(settings.db_path)
-    if not valid_registration(store, token):
+    user_id = _registration_user_id(store, token)
+    if not user_id or not valid_registration(store, token, user_id):
         raise HTTPException(404)
     # A non-simple cross-origin request and browser-origin mismatch are rejected.
     from urllib.parse import urlparse
@@ -171,7 +196,7 @@ async def submit(token: str, request: Request):
             raise ValueError
         values = {k: v[0] for k, v in parsed.items()}
         account_id = await asyncio.to_thread(
-            save_connection, settings, store, token, values
+            save_connection, settings, store, token, values, user_id
         )
     except DataError as exc:
         return page(

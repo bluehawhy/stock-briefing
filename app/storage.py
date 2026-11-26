@@ -55,6 +55,15 @@ class Store:
                     chat_id TEXT NOT NULL UNIQUE,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS dashboard_accounts (
+                    user_id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL, password_salt TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS dashboard_registrations (
+                    token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+                    expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS poll_state (
                     bot TEXT PRIMARY KEY,
                     next_update_id INTEGER NOT NULL
@@ -135,6 +144,85 @@ class Store:
             ).fetchall()
         return [(key, json.loads(value)) for key, value in rows]
 
+    @staticmethod
+    def user_key(user_id: str, key: str) -> str:
+        if not user_id:
+            raise ValueError("user_id is required for user-scoped records")
+        return f"user:{user_id}:{key}"
+
+    def _sole_registered_user(self, user_id: str) -> bool:
+        self.init()
+        with self.connect() as db:
+            rows = db.execute("SELECT user_id FROM telegram_recipients").fetchall()
+        return len(rows) == 1 and str(rows[0][0]) == str(user_id)
+
+    def get_for_user(self, kind: str, key: str, user_id: str, default=None):
+        user_id = str(user_id)
+        scoped = self.get(kind, self.user_key(user_id, key))
+        if scoped is not None:
+            return scoped if isinstance(scoped, dict) and scoped.get("user_id") == user_id else default
+        legacy = self.get(kind, key)
+        if not isinstance(legacy, dict):
+            return default
+        owner = legacy.get("user_id")
+        if owner == user_id or (owner is None and self._sole_registered_user(user_id)):
+            return legacy
+        return default
+
+    def items_for_user(self, kind: str, user_id: str) -> list[tuple[str, dict]]:
+        user_id = str(user_id)
+        prefix = self.user_key(user_id, "")
+        rows = self.items(kind)
+        allow_legacy = any(
+            isinstance(value, dict) and value.get("user_id") is None and not key.startswith("user:")
+            for key, value in rows
+        ) and self._sole_registered_user(user_id)
+        result = {}
+        for key, value in rows:
+            if not isinstance(value, dict):
+                continue
+            owner = value.get("user_id")
+            if owner != user_id and not (owner is None and allow_legacy and not key.startswith("user:")):
+                continue
+            item_key = key[len(prefix):] if key.startswith(prefix) else key
+            result[item_key] = value
+        return sorted(result.items())
+
+    @staticmethod
+    def put_for_user_in(db, kind: str, key: str, value: dict, user_id: str) -> None:
+        user_id = str(user_id)
+        record = dict(value)
+        record["user_id"] = user_id
+        Store.put_in(db, kind, Store.user_key(user_id, key), record)
+        legacy = db.execute(
+            "SELECT value FROM records WHERE kind=? AND key=?", (kind, key)
+        ).fetchone()
+        if legacy:
+            try:
+                old_value = json.loads(legacy[0])
+            except (TypeError, ValueError):
+                old_value = None
+            if isinstance(old_value, dict) and old_value.get("user_id") == user_id:
+                db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
+
+    @staticmethod
+    def delete_for_user_in(db, kind: str, key: str, user_id: str) -> None:
+        user_id = str(user_id)
+        db.execute(
+            "DELETE FROM records WHERE kind=? AND key=?",
+            (kind, Store.user_key(user_id, key)),
+        )
+        legacy = db.execute(
+            "SELECT value FROM records WHERE kind=? AND key=?", (kind, key)
+        ).fetchone()
+        if legacy:
+            try:
+                old_value = json.loads(legacy[0])
+            except (TypeError, ValueError):
+                old_value = None
+            if isinstance(old_value, dict) and old_value.get("user_id") == user_id:
+                db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
+
     def put(self, kind: str, key: str, value: dict) -> None:
         self.init()
         with self.connect() as db:
@@ -147,6 +235,11 @@ class Store:
             "value=excluded.value, updated_at=excluded.updated_at",
             (kind, key, json.dumps(value, ensure_ascii=False, allow_nan=False), _now()),
         )
+
+    def put_for_user(self, kind: str, key: str, value: dict, user_id: str) -> None:
+        self.init()
+        with self.connect() as db:
+            self.put_for_user_in(db, kind, key, value, user_id)
 
     def delete(self, kind: str, key: str) -> None:
         self.init()
@@ -363,9 +456,53 @@ class Store:
         with self.connect() as source, sqlite3.connect(destination) as target:
             source.backup(target)
 
+    @staticmethod
+    def migrate_legacy_user_data_in(db, user_id: str) -> None:
+        user_id = str(user_id)
+        kinds = (
+            "accounts", "briefing_view_days", "briefing_views", "credentials",
+            "evaluations", "holdings", "manual_holdings", "order_limits",
+            "order_stop", "proposals", "provider_status", "recommendations",
+            "registration", "runs", "settings", "watch_proposals", "watchlist",
+        )
+        for kind in kinds:
+            rows = db.execute(
+                "SELECT key,value FROM records WHERE kind=? AND key NOT LIKE 'user:%'",
+                (kind,),
+            ).fetchall()
+            for key, raw in rows:
+                try:
+                    value = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                owner = value.get("user_id") if isinstance(value, dict) else None
+                if owner not in (None, user_id):
+                    continue
+                scoped_key = Store.user_key(user_id, key)
+                if not db.execute(
+                    "SELECT 1 FROM records WHERE kind=? AND key=?", (kind, scoped_key)
+                ).fetchone():
+                    Store.put_for_user_in(db, kind, key, value, user_id)
+                db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
+        rows = db.execute(
+            "SELECT briefing_date,body,created_at FROM briefings"
+        ).fetchall()
+        for day, body, created_at in rows:
+            scoped_key = Store.user_key(user_id, day)
+            if not db.execute(
+                "SELECT 1 FROM records WHERE kind='briefings' AND key=?", (scoped_key,)
+            ).fetchone():
+                Store.put_for_user_in(
+                    db, "briefings", day,
+                    {"day": day, "body": body, "created_at": created_at}, user_id,
+                )
+
     def register_telegram(self, user_id: str, chat_id: str) -> None:
         self.init()
         with self.connect() as db:
+            existing = db.execute("SELECT user_id FROM telegram_recipients").fetchall()
+            if len(existing) == 1 and str(existing[0][0]) != str(user_id):
+                self.migrate_legacy_user_data_in(db, str(existing[0][0]))
             db.execute(
                 """INSERT INTO telegram_recipients VALUES (?, ?, ?)
                    ON CONFLICT(user_id) DO UPDATE SET chat_id=excluded.chat_id,
@@ -397,10 +534,17 @@ class Store:
                 (offset,),
             )
 
-    def save_briefing(self, day: date, body: str) -> None:
+    def save_briefing(self, day: date, body: str, user_id: str | None = None) -> None:
         if not body.strip():
             raise ValueError("Briefing body must not be empty")
         self.init()
+        if user_id is not None:
+            self.put_for_user(
+                "briefings", day.isoformat(),
+                {"day": day.isoformat(), "body": body, "created_at": _now()},
+                str(user_id),
+            )
+            return
         with self.connect() as db:
             db.execute(
                 """INSERT INTO briefings VALUES (?, ?, ?)
@@ -409,8 +553,19 @@ class Store:
                 (day.isoformat(), body, _now()),
             )
 
-    def briefing(self, day: date | None = None) -> tuple[str, str] | None:
+    def briefing(self, day: date | None = None, user_id: str | None = None) -> tuple[str, str] | None:
         self.init()
+        if user_id is not None:
+            records = self.items_for_user("briefings", str(user_id))
+            if day is not None:
+                record = dict(records).get(day.isoformat())
+                if record:
+                    return record.get("day", day.isoformat()), record["body"]
+            elif records:
+                key, record = max(records, key=lambda pair: pair[0])
+                return record.get("day", key), record["body"]
+            if not self._sole_registered_user(str(user_id)):
+                return None
         with self.connect() as db:
             if day is None:
                 row = db.execute(
@@ -423,6 +578,20 @@ class Store:
                 ).fetchone()
             return (row[0], row[1]) if row else None
 
+    def briefing_history(self, user_id: str, before: date | None = None, limit: int = 31):
+        records = self.items_for_user("briefings", str(user_id))
+        cutoff = before.isoformat() if before else "9999-12-31"
+        result = [(r.get("day", key), r.get("created_at", "")) for key, r in records
+                  if key < cutoff]
+        if not result and self._sole_registered_user(str(user_id)):
+            with self.connect() as db:
+                rows = db.execute(
+                    "SELECT briefing_date,created_at FROM briefings WHERE briefing_date<? ORDER BY briefing_date DESC LIMIT ?",
+                    (cutoff, limit),
+                ).fetchall()
+            result = [(r[0], r[1]) for r in rows]
+        return sorted(result, reverse=True)[:limit]
+
     def last_delivery(self) -> tuple[str, str] | None:
         self.init()
         with self.connect() as db:
@@ -433,23 +602,24 @@ class Store:
             return (row[0], row[1]) if row else None
 
     @traced("storage.reserve_delivery")
-    def reserve_delivery(self, day: date) -> bool:
+    def reserve_delivery(self, day: date, user_id: str | None = None) -> bool:
         self.init()
         with self.connect() as db:
             cur = db.execute(
                 """INSERT OR IGNORE INTO delivery_runs
                    (briefing_date, channel, status, updated_at)
-                   VALUES (?, 'telegram', 'pending', ?)""",
-                (day.isoformat(), _now()),
+                   VALUES (?, ?, 'pending', ?)""",
+                (day.isoformat(), "telegram:" + str(user_id) if user_id is not None else "telegram", _now()),
             )
             return cur.rowcount == 1
 
     @traced("storage.finish_delivery")
-    def finish_delivery(self, day: date, status: str, detail: str = "") -> None:
+    def finish_delivery(self, day: date, status: str, detail: str = "", user_id: str | None = None) -> None:
         with self.connect() as db:
             db.execute(
                 """UPDATE delivery_runs SET status=?, detail=?, updated_at=?
-                   WHERE briefing_date=? AND channel='telegram'""",
-                (status, detail[:300], _now(), day.isoformat()),
+                   WHERE briefing_date=? AND channel=?""",
+                (status, detail[:300], _now(), day.isoformat(),
+                 "telegram:" + str(user_id) if user_id is not None else "telegram"),
             )
 

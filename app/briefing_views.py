@@ -6,17 +6,26 @@ from uuid import uuid4
 ACTIONS = ("매수", "매도", "관망", "의견 보류")
 
 
-def save_view(store, day, body, entries):
+def save_view(store, day, body, entries, user_id=None):
     view_id = uuid4().hex
     view = {"id": view_id, "day": str(day), "body": body, "entries": entries}
-    store.put("briefing_views", view_id, view)
-    store.put("briefing_view_days", str(day), {"id": view_id})
+    if user_id is None:
+        store.put("briefing_views", view_id, view)
+        store.put("briefing_view_days", str(day), {"id": view_id})
+    else:
+        store.put("briefing_views", store.user_key(user_id, view_id),
+                  {**view, "user_id": str(user_id)})
+        store.put("briefing_view_days", store.user_key(user_id, str(day)),
+                  {"id": view_id, "user_id": str(user_id)})
     return view
 
 
-def daily_view(store, day):
-    pointer = store.get("briefing_view_days", str(day), {})
-    return store.get("briefing_views", pointer.get("id", ""))
+def daily_view(store, day, user_id=None):
+    if user_id is None:
+        pointer = store.get("briefing_view_days", str(day), {})
+        return store.get("briefing_views", pointer.get("id", ""))
+    pointer = store.get_for_user("briefing_view_days", str(day), user_id, {})
+    return store.get_for_user("briefing_views", pointer.get("id", ""), user_id)
 
 
 def count(view, action):
