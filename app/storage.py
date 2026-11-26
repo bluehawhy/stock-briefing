@@ -549,23 +549,24 @@ class Store:
             return (row[0], row[1]) if row else None
 
     @traced("storage.reserve_delivery")
-    def reserve_delivery(self, day: date) -> bool:
+    def reserve_delivery(self, day: date, user_id: str | None = None) -> bool:
         self.init()
         with self.connect() as db:
             cur = db.execute(
                 """INSERT OR IGNORE INTO delivery_runs
                    (briefing_date, channel, status, updated_at)
-                   VALUES (?, 'telegram', 'pending', ?)""",
-                (day.isoformat(), _now()),
+                   VALUES (?, ?, 'pending', ?)""",
+                (day.isoformat(), "telegram:" + str(user_id) if user_id is not None else "telegram", _now()),
             )
             return cur.rowcount == 1
 
     @traced("storage.finish_delivery")
-    def finish_delivery(self, day: date, status: str, detail: str = "") -> None:
+    def finish_delivery(self, day: date, status: str, detail: str = "", user_id: str | None = None) -> None:
         with self.connect() as db:
             db.execute(
                 """UPDATE delivery_runs SET status=?, detail=?, updated_at=?
-                   WHERE briefing_date=? AND channel='telegram'""",
-                (status, detail[:300], _now(), day.isoformat()),
+                   WHERE briefing_date=? AND channel=?""",
+                (status, detail[:300], _now(), day.isoformat(),
+                 "telegram:" + str(user_id) if user_id is not None else "telegram"),
             )
 
