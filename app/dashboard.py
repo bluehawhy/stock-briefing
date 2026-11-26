@@ -44,7 +44,7 @@ def _transport_allowed(request: Request) -> bool:
 
 
 def configured(request: Request):
-    if len(os.getenv('DASHBOARD_PASSWORD', '')) < 12:
+    if not (os.getenv('DASHBOARD_SESSION_SECRET') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('MASTER_KEY')):
         raise HTTPException(404)
     if not _transport_allowed(request):
         raise HTTPException(403, 'HTTPS 연결이 필요합니다.')
@@ -59,23 +59,34 @@ def same_origin(request: Request):
 
 
 def signature(value: str) -> str:
-    # Credential changes immediately invalidate every existing cookie.
-    key = sha256((os.getenv('DASHBOARD_USERNAME', 'admin') + '\0' +
-                  os.getenv('DASHBOARD_PASSWORD', '')).encode()).digest()
+    key_source = (os.getenv('DASHBOARD_SESSION_SECRET') or
+                  os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('MASTER_KEY', ''))
+    key = sha256(("stock-briefing-session\\0" + key_source).encode()).digest()
     return hmac_new(key, value.encode(), sha256).hexdigest()
 
 
-def signed_in(request: Request) -> bool:
+def session_user_id(request: Request) -> str | None:
     token = request.cookies.get(COOKIE, '')
-    if len(token) > 256:
-        return False
+    if len(token) > 512:
+        return None
     try:
-        expiry, nonce, digest = token.split('.')
+        expiry, user_id, nonce, digest = token.split('.')
         remaining = int(expiry) - time.time()
-        return (0 < remaining <= SESSION_SECONDS and len(nonce) == 32 and
-                compare_digest(digest, signature(expiry + '.' + nonce)))
+        signed = expiry + '.' + user_id + '.' + nonce
+        if not (0 < remaining <= SESSION_SECONDS and len(nonce) == 32 and user_id.isascii() and user_id.isdigit()
+                and compare_digest(digest, signature(signed))):
+            return None
+        store = Store(Settings.from_env().db_path)
+        store.init()
+        with store.connect() as db:
+            exists = db.execute("SELECT 1 FROM dashboard_accounts WHERE user_id=?", (user_id,)).fetchone()
+        return user_id if exists else None
     except (ValueError, OverflowError):
-        return False
+        return None
+
+
+def signed_in(request: Request) -> bool:
+    return session_user_id(request) is not None
 
 
 def authorize(request: Request, response: Response):
@@ -83,6 +94,7 @@ def authorize(request: Request, response: Response):
     if not signed_in(request):
         raise HTTPException(401, '로그인이 필요합니다.', headers=HEADERS)
     response.headers.update(HEADERS)
+    request.state.dashboard_user_id = session_user_id(request)
     if request.method not in {'GET', 'HEAD'}:
         same_origin(request)
     store = Store(Settings.from_env().db_path)
@@ -125,19 +137,37 @@ def login(payload: LoginInput, request: Request):
         if attempts >= 10 or (peer not in _login_attempts and len(_login_attempts) >= 4096):
             raise HTTPException(429, '잠시 후 다시 로그인하세요.', headers={'Retry-After': '300'})
         _login_attempts[peer] = (started, attempts + 1)
-    valid_user = compare_digest(payload.username.encode(), os.getenv('DASHBOARD_USERNAME', 'admin').encode())
-    valid_password = compare_digest(payload.password.encode(), os.getenv('DASHBOARD_PASSWORD', '').encode())
-    if not (valid_user and valid_password):
+    username = payload.username.strip().lower()
+    store = Store(Settings.from_env().db_path)
+    store.init()
+    with store.connect() as db:
+        row = db.execute(
+            "SELECT user_id,password_hash,password_salt FROM dashboard_accounts WHERE username=?",
+            (username,),
+        ).fetchone()
+    valid = False
+    user_id = None
+    if row:
+        try:
+            candidate = __import__('hashlib').pbkdf2_hmac(
+                'sha256', payload.password.encode(), bytes.fromhex(row[2]), 600_000
+            ).hex()
+            valid = compare_digest(candidate, row[1])
+            user_id = str(row[0]) if valid else None
+        except (ValueError, TypeError):
+            valid = False
+    if not valid:
         raise HTTPException(401, '아이디 또는 비밀번호를 확인하세요.', headers=HEADERS)
     with _login_lock:
         _login_attempts.pop(peer, None)
-    value = str(int(time.time()) + SESSION_SECONDS) + '.' + secrets.token_hex(16)
+    expiry = str(int(time.time()) + SESSION_SECONDS)
+    nonce = secrets.token_hex(16)
+    value = expiry + '.' + user_id + '.' + nonce
     response = Response(status_code=204, headers=HEADERS)
     response.set_cookie(COOKIE, value + '.' + signature(value), max_age=SESSION_SECONDS,
                         httponly=True, secure=request.url.scheme == 'https',
                         samesite='strict', path='/stock-briefing')
     return response
-
 
 @router.post('/api/logout', dependencies=[Depends(same_origin)])
 def logout():
@@ -153,17 +183,17 @@ def asset(filename: str):
     return FileResponse(ASSETS / filename, headers=HEADERS)
 
 
-def _dashboard_user_id():
-    user_ids = Settings.from_env().telegram_allowed_user_ids
-    if len(user_ids) != 1:
-        raise HTTPException(503, '대시보드는 단일 운영자 계정만 지원합니다.')
-    return next(iter(user_ids))
+def _dashboard_user_id(request: Request):
+    user_id = getattr(request.state, 'dashboard_user_id', None)
+    if not user_id:
+        raise HTTPException(401, '로그인이 필요합니다.')
+    return user_id
 
 
 @router.get('/api/overview')
-def overview(store: Store = Depends(authorize)):
-    user_id = _dashboard_user_id()
-    latest = store.briefing()
+def overview(request: Request, store: Store = Depends(authorize)):
+    user_id = _dashboard_user_id(request)
+    latest = store.briefing(user_id=user_id)
     proposals = dict(store.items_for_user('watch_proposals', user_id))
     watchlist = []
     for symbol, info in sorted(store.items_for_user('watchlist', user_id)):
@@ -185,17 +215,15 @@ def overview(store: Store = Depends(authorize)):
 
 
 @router.get('/api/history')
-def history(before: date | None = None, store: Store = Depends(authorize)):
-    with store.connect() as db:
-        rows = db.execute('SELECT briefing_date, created_at FROM briefings WHERE briefing_date < ? ORDER BY briefing_date DESC LIMIT 31',
-                          (before.isoformat() if before else '9999-12-31',)).fetchall()
+def history(request: Request, before: date | None = None, store: Store = Depends(authorize)):
+    rows = store.briefing_history(_dashboard_user_id(request), before, 31)
     return {'items': [{'day': r[0], 'created_at': r[1]} for r in rows[:30]],
             'next': rows[29][0] if len(rows) > 30 else None}
 
 
 @router.get('/api/history/{day}')
-def historical(day: date, store: Store = Depends(authorize)):
-    result = store.briefing(day)
+def historical(day: date, request: Request, store: Store = Depends(authorize)):
+    result = store.briefing(day, _dashboard_user_id(request))
     if not result:
         raise HTTPException(404, '해당 날짜의 브리핑이 없습니다.')
     return {'day': result[0], 'body': result[1]}
@@ -213,9 +241,9 @@ class WatchInput(BaseModel):
 
 
 @router.post('/api/watchlist')
-def add_watch(payload: WatchInput, store: Store = Depends(authorize)):
+def add_watch(payload: WatchInput, request: Request, store: Store = Depends(authorize)):
     settings = Settings.from_env()
-    user_id = _dashboard_user_id()
+    user_id = _dashboard_user_id(request)
     query = payload.query.strip()
     if not query:
         raise HTTPException(400, '종목명 또는 종목코드를 입력하세요.')
@@ -237,10 +265,10 @@ def add_watch(payload: WatchInput, store: Store = Depends(authorize)):
 
 
 @router.delete('/api/watchlist/{symbol}')
-def remove_watch(symbol: str, store: Store = Depends(authorize)):
+def remove_watch(symbol: str, request: Request, store: Store = Depends(authorize)):
     try:
         symbol = symbol_code(symbol)
-        BotService(Settings.from_env(), store)._watchlist_change(symbol, None, _dashboard_user_id())
+        BotService(Settings.from_env(), store)._watchlist_change(symbol, None, _dashboard_user_id(request))
         store.audit('web_watchlist_remove', symbol)
     except DataError as exc:
         raise HTTPException(409, str(exc)) from None
