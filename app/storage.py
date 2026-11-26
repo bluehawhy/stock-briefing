@@ -135,6 +135,66 @@ class Store:
             ).fetchall()
         return [(key, json.loads(value)) for key, value in rows]
 
+    @staticmethod
+    def user_key(user_id: str, key: str) -> str:
+        if not user_id:
+            raise ValueError("user_id is required for user-scoped records")
+        return f"user:{user_id}:{key}"
+
+    def get_for_user(self, kind: str, key: str, user_id: str, default=None):
+        user_id = str(user_id)
+        scoped = self.get(kind, self.user_key(user_id, key))
+        if scoped is not None:
+            return scoped if isinstance(scoped, dict) and scoped.get("user_id") == user_id else default
+        legacy = self.get(kind, key)
+        return legacy if isinstance(legacy, dict) and legacy.get("user_id") == user_id else default
+
+    def items_for_user(self, kind: str, user_id: str) -> list[tuple[str, dict]]:
+        user_id = str(user_id)
+        prefix = self.user_key(user_id, "")
+        result = []
+        for key, value in self.items(kind):
+            if not isinstance(value, dict) or value.get("user_id") != user_id:
+                continue
+            item_key = key[len(prefix):] if key.startswith(prefix) else key
+            result.append((item_key, value))
+        return result
+
+    @staticmethod
+    def put_for_user_in(db, kind: str, key: str, value: dict, user_id: str) -> None:
+        user_id = str(user_id)
+        record = dict(value)
+        record["user_id"] = user_id
+        Store.put_in(db, kind, Store.user_key(user_id, key), record)
+        legacy = db.execute(
+            "SELECT value FROM records WHERE kind=? AND key=?", (kind, key)
+        ).fetchone()
+        if legacy:
+            try:
+                old_value = json.loads(legacy[0])
+            except (TypeError, ValueError):
+                old_value = None
+            if isinstance(old_value, dict) and old_value.get("user_id") == user_id:
+                db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
+
+    @staticmethod
+    def delete_for_user_in(db, kind: str, key: str, user_id: str) -> None:
+        user_id = str(user_id)
+        db.execute(
+            "DELETE FROM records WHERE kind=? AND key=?",
+            (kind, Store.user_key(user_id, key)),
+        )
+        legacy = db.execute(
+            "SELECT value FROM records WHERE kind=? AND key=?", (kind, key)
+        ).fetchone()
+        if legacy:
+            try:
+                old_value = json.loads(legacy[0])
+            except (TypeError, ValueError):
+                old_value = None
+            if isinstance(old_value, dict) and old_value.get("user_id") == user_id:
+                db.execute("DELETE FROM records WHERE kind=? AND key=?", (kind, key))
+
     def put(self, kind: str, key: str, value: dict) -> None:
         self.init()
         with self.connect() as db:
